@@ -179,6 +179,8 @@ app.get("/health", async (c) => {
       perplexity: hasPerplexity ? "configured" : "missing",
       sendgrid: hasSendGrid ? "configured" : "missing",
       elevenlabs: hasElevenLabs ? "configured" : "missing",
+      adminAccessCode: !!process.env.ADMIN_ACCESS_CODE ? "configured" : "missing",
+      employeeAccessCode: !!process.env.EMPLOYEE_ACCESS_CODE ? "configured" : "missing",
     },
   });
 });
