@@ -1020,11 +1020,11 @@ smartCompsRouter.post("/analyze", async (c) => {
         return compat.comparable;
       })
       // Condition filter: for land_needs_work, use scoring bonuses instead of hard-filter
-      // (teardown searches need new construction + vacant land comps, not just other teardowns)
-      // For other conditions, hard-filter to matching comps
+      // Unknown condition (no sqft data) always passes — can't exclude what we can't detect
       .filter(comp => {
         if (!conditionFilter) return true;
         if (conditionFilter === "land_needs_work") return true; // Handled by special scoring bonuses
+        if (comp.condition === "unknown") return true; // Can't detect, don't exclude
         return comp.condition === conditionFilter;
       })
       // Location tier filter: only keep comps matching the selected location type
@@ -1233,4 +1233,3 @@ smartCompsRouter.get("/market-data", (c) => {
 });
 
 export { smartCompsRouter };// v4 - Mon Mar  2 13:10:21 EST 2026
-// deploy 1772488058
