@@ -64,6 +64,12 @@ export const TIER1_OCEANFRONT: Record<string, string[]> = {
   "east hampton": [
     "west end avenue", "west end road", "west dune road",
     "windmill lane", "spaeth lane",
+    "lily pond lane", "further lane",
+  ],
+  "east hampton village": [
+    "west end avenue", "west end road", "west dune road",
+    "windmill lane", "spaeth lane",
+    "lily pond lane", "further lane",
   ],
   "amagansett": [
     "amagansett west end lane", "bluff road", "marine boulevard",
