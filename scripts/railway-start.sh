@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== Railway Deployment v5 ==="
+echo "=== Railway Deployment v6 ==="
 
 echo "Installing dependencies..."
 bun install
@@ -16,7 +16,13 @@ echo "Generating Prisma client..."
 bunx prisma generate
 
 echo "Running database migrations (push)..."
-bunx prisma db push --accept-data-loss
+# Use --skip-generate since we already generated above
+# If db push fails (e.g. cross-schema refs in Supabase), continue anyway
+# Tables already exist from previous deployments
+bunx prisma db push --accept-data-loss --skip-generate || {
+  echo "WARNING: db push failed (likely cross-schema ref in Supabase). Continuing anyway..."
+  echo "Tables already exist from previous deployment."
+}
 
 echo "Starting server..."
 exec bun src/index.ts

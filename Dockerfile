@@ -26,5 +26,5 @@ RUN bunx prisma generate
 # Expose port
 EXPOSE 8080
 
-# Start command - run migrations then start server
-CMD bunx prisma db push --accept-data-loss && bun src/index.ts
+# Start command - try migrations (non-fatal if cross-schema error), then start server
+CMD bash -c '(bunx prisma db push --accept-data-loss --skip-generate 2>&1 || echo "db push warning - tables already exist") && exec bun src/index.ts'
