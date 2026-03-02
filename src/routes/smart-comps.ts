@@ -70,7 +70,7 @@ function getPriceFilter(price: number) {
 // CONDITION DETECTION (from price/sqft ratio vs market avg)
 // =============================================================================
 
-type PropertyCondition = "teardown" | "needs_renovation" | "normal" | "new_construction" | "unknown";
+type PropertyCondition = "land_needs_work" | "existing_home" | "renovated" | "new_construction" | "unknown";
 
 function detectCondition(pricePerSqft: number | null, village: string): PropertyCondition {
   if (!pricePerSqft) return "unknown";
@@ -80,10 +80,11 @@ function detectCondition(pricePerSqft: number | null, village: string): Property
   const avgPpsf = isSpring ? 500 : 1000; // $500/sqft Springs, $1000/sqft standard Hamptons
 
   const ratio = pricePerSqft / avgPpsf;
-  if (ratio < 0.40) return "teardown";
-  if (ratio < 0.65) return "needs_renovation";
-  if (ratio > 1.50) return "new_construction";
-  return "normal";
+  if (ratio < 0.40) return "land_needs_work";    // Teardown / land value only
+  if (ratio < 0.65) return "existing_home";        // Older / needs work
+  if (ratio > 1.50) return "new_construction";     // Brand new build
+  if (ratio > 1.15) return "renovated";            // Recently updated
+  return "existing_home";                           // Standard existing home
 }
 
 // =============================================================================
@@ -668,7 +669,7 @@ const smartCompSchema = z.object({
   micro_market: z.string().optional(),
   max_results: z.number().min(3).max(20).optional().default(15),
   // Optional overrides — when set, these filter comps instead of auto-detecting
-  condition: z.enum(["teardown", "needs_renovation", "normal", "new_construction"]).optional(),
+  condition: z.enum(["land_needs_work", "existing_home", "renovated", "new_construction"]).optional(),
   location_tier: z.enum([
     "auto",           // AI determines (default, same as omitting)
     "oceanfront",     // Tier 1 oceanfront
