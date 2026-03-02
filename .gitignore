@@ -1,0 +1,8 @@
+node_modules/
+.prisma/
+*.db
+*.db-journal
+.env
+.env.local
+.env.production
+bun.lock

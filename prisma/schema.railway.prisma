@@ -1,0 +1,577 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model - basic user info with referral code
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  referral_code String   @unique // 8-character unique code
+  tier          String   @default("verified") // verified, basic, agent, elite
+  role          String   @default("reader") // reader, agent, admin
+  name          String?
+  phone         String?
+  market_primary String  @default("hamptons") // hamptons, palm-beach, miami, aspen
+  last_login_at DateTime?
+  is_email_verified Boolean @default(false)
+
+  // Profile completion fields
+  full_name         String?  // User's full name for personalization
+  preferred_email   String?  // Real email (if different from auth email, e.g., Apple relay)
+  profile_completed Boolean  @default(false)
+  profile_skipped_at DateTime? // Track when profile was skipped (prompt once per week)
+
+  // Agent-specific fields
+  agent_license_number String?
+  agent_verification_status String @default("not_submitted") // not_submitted, pending, approved, rejected
+  agent_verification_submitted_at DateTime?
+  agent_verification_reviewed_at DateTime?
+  agent_brokerage String?
+
+  // Credit tracking fields (server-side source of truth)
+  listing_credits_used      Int @default(0)    // Total listings submitted (all-time)
+  article_credits_used      Int @default(0)    // Total free article credits used (all-time)
+  purchased_listing_credits Int @default(0)    // Additional listing credits purchased ($49.99 each)
+  purchased_article_credits Int @default(0)    // Additional article credits purchased ($299 each)
+  tier_activated_at         DateTime?          // When current tier was activated (for credit grant tracking)
+
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  // Referrals made by this user (as referrer)
+  referrals_made    Referral[]       @relation("ReferrerRelation")
+  // Referrals this user received (as referred)
+  referrals_received Referral[]      @relation("ReferredRelation")
+  // Rewards earned by this user
+  rewards           ReferralReward[]
+  // Subscriptions
+  subscriptions     Subscription[]
+  // Events
+  events            Event[]
+  // Monetization/upsells
+  monetization      Monetization[]
+
+  // Performance indexes
+  @@index([role])
+  @@index([tier])
+  @@index([created_at])
+  @@index([agent_verification_status])
+  @@map("users")
+}
+
+// Referral model - tracks referral relationships
+model Referral {
+  id            String   @id @default(uuid())
+  referrer_id   String   // User who made the referral
+  referred_id   String   // User who was referred
+  referred_tier String   // Tier the referred user signed up for
+  status        String   @default("pending") // pending, completed, expired, revoked
+  created_at    DateTime @default(now())
+  completed_at  DateTime?
+
+  // Anti-fraud fields
+  subscription_id     String?   // RevenueCat subscription ID for verification
+  min_subscription_days Int @default(7) // Minimum days subscribed before reward granted
+  verified_at         DateTime? // When subscription was verified as legitimate
+
+  // Relations
+  referrer      User     @relation("ReferrerRelation", fields: [referrer_id], references: [id])
+  referred      User     @relation("ReferredRelation", fields: [referred_id], references: [id])
+
+  @@unique([referrer_id, referred_id])
+  @@index([referrer_id])
+  @@index([referred_id])
+  @@index([status])
+  @@map("referrals")
+}
+
+// ReferralReward model - tracks earned rewards
+model ReferralReward {
+  id          String    @id @default(uuid())
+  user_id     String    // User who earned the reward
+  reward_type String    // free_month_basic, free_month_pro, free_month_elite, free_custom_article
+  status      String    @default("pending") // pending, redeemed, expired
+  earned_at   DateTime  @default(now())
+  redeemed_at DateTime?
+  expires_at  DateTime? // Rewards expire after 90 days if not redeemed
+
+  // Relations
+  user        User      @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([status])
+  @@map("referral_rewards")
+}
+
+// Article model - for SEO website
+model Article {
+  id            String   @id @default(uuid())
+  slug          String   @unique
+  title         String
+  subtitle      String?
+  excerpt       String
+  content       String   // Full article content
+  category      String   // trades, market, data, law, listings
+  author        String
+  location      String
+  market_id     String   // hamptons, palm-beach, miami, aspen
+  image_url     String
+  reading_time  Int      @default(5)
+  featured      Boolean  @default(false)
+  pull_quote    String?
+  stat_value    String?  // e.g., "$5.2M"
+  stat_label    String?  // e.g., "Sale Price"
+  published_at  DateTime @default(now())
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@index([market_id])
+  @@index([category])
+  @@index([featured])
+  @@map("articles")
+}
+
+// Listing model - for featured listings on website
+model Listing {
+  id              String   @id @default(uuid())
+  address         String
+  village         String   // neighborhood/village name
+  market_id       String   // hamptons, palm-beach, miami, aspen
+  price           Int
+  listing_type    String   @default("sale") // sale or rental
+  beds            Int
+  baths           Float
+  sqft            Int
+  acres           Float?
+  year_built      Int?
+  image_url       String
+  image_urls      String?  // JSON array of additional images
+  broker_name     String
+  broker_company  String
+  broker_phone    String?
+  broker_email    String?
+  description     String
+  featured        Boolean  @default(false)
+  is_editors_pick Boolean  @default(false)
+  listing_status  String   @default("active") // active, in_contract, sold
+  fair_housing_statement Boolean @default(false) // Show Equal Housing Opportunity statement
+  fair_housing_logo      Boolean @default(false) // Display Fair Housing logo
+  latitude        Float?
+  longitude       Float?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([market_id])
+  @@index([featured])
+  @@map("listings")
+}
+
+// UserSession model - tracks app usage sessions
+model UserSession {
+  id               String   @id @default(uuid())
+  user_id          String
+  email            String
+  name             String   @default("")
+  user_type        String   @default("reader")
+  platform         String   @default("ios")
+  sign_in_time     DateTime @default(now())
+  last_active_at   DateTime @default(now())
+  duration_seconds Int      @default(0)
+  is_active        Boolean  @default(true)
+
+  @@index([user_id])
+  @@index([email])
+  @@index([sign_in_time])
+  @@index([is_active])
+  @@map("user_sessions")
+}
+
+// Subscription model - tracks user subscriptions
+model Subscription {
+  id                    String    @id @default(uuid())
+  user_id               String
+  plan_type             String    // reader_premium, agent_20, agent_50, agent_100
+  status                String    @default("trialing") // trialing, active, canceled, past_due, expired
+  trial_start_at        DateTime?
+  trial_end_at          DateTime?
+  current_period_start  DateTime?
+  current_period_end    DateTime?
+  canceled_at           DateTime?
+  cancel_reason         String?
+  mrr_amount            Float     @default(0) // Monthly recurring revenue amount
+  revenuecat_id         String?   // RevenueCat subscription ID
+  source                String    @default("organic") // email_outreach, cold_call, instagram, facebook, x, linkedin, referral, organic, other
+  created_at            DateTime  @default(now())
+  updated_at            DateTime  @updatedAt
+
+  // Relations
+  user                  User      @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([status])
+  @@index([plan_type])
+  @@map("subscriptions")
+}
+
+// Event model - tracks user events for analytics
+model Event {
+  id               String   @id @default(uuid())
+  user_id          String?
+  market           String   @default("hamptons") // hamptons, palm-beach, miami, aspen
+  event_name       String
+  event_properties String?  // JSON string of event properties
+  created_at       DateTime @default(now())
+
+  // Relations
+  user             User?    @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([event_name])
+  @@index([market])
+  @@index([created_at])
+  @@map("events")
+}
+
+// CRM Lead model - tracks leads for sales
+model CrmLead {
+  id              String    @id @default(uuid())
+  lead_type       String    // agent, reader
+  name            String
+  email           String
+  phone           String?
+  brokerage       String?
+  market          String    @default("hamptons") // hamptons, palm-beach, miami, aspen
+  source          String    @default("organic") // email_outreach, cold_call, instagram, facebook, x, linkedin, referral, organic, other
+  status          String    @default("not_contacted") // not_contacted, contacted, interested, trial, paid, churned, not_a_fit
+  notes           String?
+  next_follow_up_at DateTime?
+  owner           String    @default("Barry")
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  @@index([lead_type])
+  @@index([status])
+  @@index([market])
+  @@index([next_follow_up_at])
+  @@map("crm_leads")
+}
+
+// Monetization model - tracks upsells (featured listings, featured articles)
+model Monetization {
+  id          String   @id @default(uuid())
+  user_id     String
+  type        String   // featured_listing, featured_article
+  amount      Float
+  market      String   @default("hamptons") // hamptons, palm-beach, miami, aspen
+  status      String   @default("pending") // pending, paid, refunded
+  listing_id  String?  // Reference to listing if applicable
+  article_id  String?  // Reference to article if applicable
+  created_at  DateTime @default(now())
+
+  // Relations
+  user        User     @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([type])
+  @@index([status])
+  @@index([created_at])
+  @@map("monetization")
+}
+
+// CompSale model - stores comparable sales records across all markets
+model CompSale {
+  id             String   @id @default(uuid())
+  market_id      String   // hamptons, palm-beach, miami, aspen
+  address        String
+  village        String?  // neighborhood/village name
+  beds           Int?
+  baths          Float?
+  sqft           Int?
+  lot_acres      Float?
+  sold_price     Float
+  sold_date      String?  // Some records have null dates
+  price_per_sqft Float?
+  source         String?  // redfin-csv, redfin-screenshot, manual, etc.
+  year_built     Int?
+  property_type  String?  // house, condo, townhouse, land
+  created_at     DateTime @default(now())
+
+  @@index([market_id])
+  @@index([village])
+  @@index([sold_price])
+  @@index([sold_date])
+  @@map("comp_sales")
+}
+
+// MarketInsight model - stores the complete market insights JSON blob per market
+model MarketInsight {
+  id          String   @id @default(uuid())
+  market_id   String   @unique // palm-beach, miami, aspen
+  market_name String
+  data_json   String   // Full MarketInsightsComplete object as JSON
+  updated_at  DateTime @updatedAt
+  created_at  DateTime @default(now())
+
+  @@index([market_id])
+  @@map("market_insights")
+}
+
+// TermsAcceptance model - tracks user acceptance of Terms of Service
+// This provides legal proof that users agreed to the terms
+model TermsAcceptance {
+  id              String   @id @default(uuid())
+  email           String
+  name            String?
+  user_type       String   @default("reader") // reader, agent
+  terms_version   String   @default("1.0") // Version of terms accepted
+  ip_address      String?  // IP address at time of acceptance
+  user_agent      String?  // Browser/device info
+  accepted_at     DateTime @default(now())
+
+  @@index([email])
+  @@index([accepted_at])
+  @@map("terms_acceptances")
+}
+
+// AgentRequest model - tracks agent sign-up requests for admin approval
+model AgentRequest {
+  id              String    @id @default(uuid())
+  name            String
+  email           String    @unique
+  phone           String?
+  license_number  String
+  broker_company  String
+  agent_number    Int?      // Sequential agent number assigned on approval
+  status          String    @default("pending") // pending, approved, rejected
+  rejection_reason String?
+  submitted_at    DateTime  @default(now())
+  reviewed_at     DateTime?
+  sign_in_method  String    @default("email") // email, apple, google
+
+  @@index([status])
+  @@index([submitted_at])
+  @@map("agent_requests")
+}
+
+// AgentListingSubmission model - tracks listings submitted by agents for admin review
+model AgentListingSubmission {
+  id              String    @id @default(uuid())
+  agent_email     String
+  agent_name      String?
+  agent_company   String?
+  agent_phone     String?
+  market_id       String    @default("hamptons")
+  address         String
+  village         String
+  price           Float
+  listing_type    String    @default("sale") // sale, rental
+  property_type   String    @default("house") // house, condo, townhouse, land
+  beds            Int
+  baths           Float
+  sqft            Int
+  acres           Float?
+  year_built      Int?
+  description     String?
+  image_url       String?
+  image_urls      String?   // JSON array
+  video_tour_url  String?
+  open_house      String?   // JSON object
+  rental_pricing  String?   // JSON array
+  condo_details   String?   // JSON object
+  attachments     String?   // JSON array
+  latitude        Float?
+  longitude       Float?
+  featured_listing_id String? // ID in featured listings store after approval
+  status          String    @default("pending") // pending, approved, rejected
+  listing_status  String    @default("active") // active, in_contract, sold
+  fair_housing_statement Boolean @default(false) // Show Equal Housing Opportunity statement
+  fair_housing_logo      Boolean @default(false) // Display Fair Housing logo
+  rejection_reason String?
+  submitted_at    DateTime  @default(now())
+  reviewed_at     DateTime?
+
+  @@index([agent_email])
+  @@index([status])
+  @@index([market_id])
+  @@index([submitted_at])
+  @@map("agent_listing_submissions")
+}
+
+// AgentArticleRequest model - tracks article requests submitted by agents
+model AgentArticleRequest {
+  id              String    @id @default(uuid())
+  agent_email     String
+  agent_name      String?
+  agent_company   String?
+  headline        String
+  focus_area      String?
+  achievements    String?
+  additional_notes String?
+  article_type    String    @default("custom") // listing, expertise, market, custom, personal
+  photo_urls      String?   // JSON array of uploaded photo URLs
+  used_free_credit Boolean  @default(false)
+  status          String    @default("pending") // pending, in_progress, published, rejected
+  rejection_reason String?
+  submitted_at    DateTime  @default(now())
+  reviewed_at     DateTime?
+
+  @@index([agent_email])
+  @@index([status])
+  @@index([submitted_at])
+  @@map("agent_article_requests")
+}
+
+// UserIntentInquiry model - tracks user intent inquiries (buy, sell, rent)
+model UserIntentInquiry {
+  id          String   @id @default(uuid())
+  email       String
+  name        String?
+  phone       String?
+  intent_type String   // buy, sell, rent
+  message     String?  // Additional details
+  market      String   @default("hamptons")
+  status      String   @default("new") // new, contacted, closed
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([email])
+  @@index([intent_type])
+  @@index([status])
+  @@index([created_at])
+  @@map("user_intent_inquiries")
+}
+
+// ArticleVesting model - tracks 6-month vesting for agent articles
+// After 6 months of active subscription, articles become permanent (vested)
+// If subscription is canceled before vesting, article is hidden immediately
+model ArticleVesting {
+  id                          String    @id @default(uuid())
+  article_request_id          String    // Reference to AgentArticleRequest.id
+  agent_email                 String
+  agent_name                  String?
+  article_title               String?
+  publication_date            DateTime  @default(now())
+  vesting_date                DateTime  // publication_date + 6 months
+  vesting_status              String    @default("pending") // pending, vested, hidden
+  subscription_status_at_pub  String    @default("active") // subscription status when article was published
+  manually_overridden         Boolean   @default(false) // admin can manually vest
+  manually_overridden_by      String?   // admin email who overrode
+  manually_overridden_at      DateTime?
+  hidden_at                   DateTime? // when article was hidden due to cancellation
+  hidden_reason               String?   // cancellation, admin_action
+  vested_at                   DateTime? // when article officially vested
+  created_at                  DateTime  @default(now())
+  updated_at                  DateTime  @updatedAt
+
+  @@index([agent_email])
+  @@index([vesting_status])
+  @@index([vesting_date])
+  @@index([publication_date])
+  @@map("article_vestings")
+}
+
+// ListingGracePeriod model - tracks 30-day grace period for listings after subscription cancellation
+model ListingGracePeriod {
+  id                  String    @id @default(uuid())
+  listing_submission_id String  // Reference to AgentListingSubmission.id
+  agent_email         String
+  listing_address     String?
+  market_id           String    @default("hamptons")
+  subscription_canceled_at DateTime  // when subscription was canceled
+  grace_period_end    DateTime  // canceled_at + 30 days
+  status              String    @default("grace") // grace, hidden, reactivated
+  hidden_at           DateTime? // when listing was hidden (after 30 days)
+  reactivated_at      DateTime? // if agent resubscribed
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+
+  @@index([agent_email])
+  @@index([status])
+  @@index([grace_period_end])
+  @@index([subscription_canceled_at])
+  @@map("listing_grace_periods")
+}
+
+// VestingAuditLog model - immutable log of all vesting-related events
+model VestingAuditLog {
+  id          String   @id @default(uuid())
+  event_type  String   // article_published, article_vested, article_hidden, listing_grace_started, listing_hidden, listing_reactivated, manual_override
+  resource_type String // article, listing
+  resource_id   String // ArticleVesting.id or ListingGracePeriod.id
+  agent_email   String
+  details       String? // JSON
+  performed_by  String? // system or admin email
+  created_at    DateTime @default(now())
+
+  @@index([agent_email])
+  @@index([event_type])
+  @@index([resource_type])
+  @@index([created_at])
+  @@map("vesting_audit_logs")
+}
+
+// SupportTicket - user-submitted help tickets
+model SupportTicket {
+  id             String    @id @default(uuid())
+  ticket_number  String    @unique  // HC-001, HC-002 ...
+  user_email     String
+  user_name      String?
+  subject        String
+  category       String    // technical, billing, article_listing, account, feature_request, other
+  priority       String    @default("medium") // low, medium, high, urgent
+  status         String    @default("open")   // open, in_progress, resolved, closed
+  agent_tier     String?   // user's agent tier at time of submission
+  is_agent       Boolean   @default(false)
+  related_article_id  String?
+  related_listing_id  String?
+  internal_notes      String?    // private admin notes
+  resolved_at         DateTime?
+  closed_at           DateTime?
+  first_response_at   DateTime?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+
+  messages  TicketMessage[]
+
+  @@index([user_email])
+  @@index([status])
+  @@index([priority])
+  @@index([category])
+  @@index([created_at])
+  @@map("support_tickets")
+}
+
+// TicketMessage - messages within a ticket thread (user or admin)
+model TicketMessage {
+  id        String   @id @default(uuid())
+  ticket_id String
+  sender    String   // "user" or "admin"
+  sender_email String?
+  body      String
+  is_internal Boolean @default(false)  // internal admin note, not shown to user
+  created_at DateTime @default(now())
+
+  ticket SupportTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+
+  @@index([ticket_id])
+  @@index([sender])
+  @@index([created_at])
+  @@map("ticket_messages")
+}
+
+// TicketSequence - auto-incrementing counter for HC-XXX numbers
+model TicketSequence {
+  id      String @id @default("singleton")
+  counter Int    @default(0)
+
+  @@map("ticket_sequence")
+}

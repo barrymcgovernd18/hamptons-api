@@ -1,0 +1,6 @@
+# Install OpenSSL for Prisma
+[phases.setup]
+aptPkgs = ["openssl", "libssl3", "libssl-dev"]
+
+[start]
+cmd = "bash scripts/railway-start.sh"
