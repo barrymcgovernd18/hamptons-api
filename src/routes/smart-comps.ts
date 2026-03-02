@@ -669,7 +669,15 @@ const smartCompSchema = z.object({
   max_results: z.number().min(3).max(20).optional().default(15),
   // Optional overrides — when set, these filter comps instead of auto-detecting
   condition: z.enum(["teardown", "needs_renovation", "normal", "new_construction"]).optional(),
-  location_tier: z.enum(["trophy", "prime", "premium", "core", "entry"]).optional(),
+  location_tier: z.enum([
+    "auto",           // AI determines (default, same as omitting)
+    "oceanfront",     // Tier 1 oceanfront
+    "pondfront",      // Pond/lake waterfront
+    "bayfront",       // Bay/harbor waterfront
+    "south_of_highway", // SOH non-waterfront
+    "north_of_highway", // NOH
+    "village",        // Village/Town center
+  ]).optional(),
 });
 
 // =============================================================================
@@ -697,17 +705,44 @@ smartCompsRouter.post("/analyze", async (c) => {
     const microMarket = subject.micro_market || null;
     const isValuationMode = !subject.price;
     const conditionFilter = subject.condition || null;
-    const locationTierFilter = subject.location_tier || null;
+    const locationTierFilter = subject.location_tier && subject.location_tier !== "auto" 
+      ? subject.location_tier : null;
 
     // Classify the subject property
     const subjectClass = classifyAddress(subject.address || "", subject.village);
 
-    // Override location tier if user specified one
+    // Override subject classification if user specified a location tier
     if (locationTierFilter) {
-      const tierMap: Record<string, string> = {
-        "trophy": "Trophy", "prime": "Prime", "premium": "Premium", "core": "Core", "entry": "Entry"
-      };
-      subjectClass.locationTier = tierMap[locationTierFilter] || subjectClass.locationTier;
+      switch (locationTierFilter) {
+        case "oceanfront":
+          subjectClass.locationType = "tier1_oceanfront";
+          subjectClass.isSouthOfHighway = true;
+          subjectClass.hasWaterfront = true;
+          subjectClass.waterfrontType = "ocean";
+          break;
+        case "pondfront":
+          subjectClass.hasWaterfront = true;
+          subjectClass.waterfrontType = "pond";
+          subjectClass.isSouthOfHighway = true;
+          break;
+        case "bayfront":
+          subjectClass.hasWaterfront = true;
+          subjectClass.waterfrontType = "bay";
+          break;
+        case "south_of_highway":
+          subjectClass.isSouthOfHighway = true;
+          subjectClass.hasWaterfront = false;
+          subjectClass.waterfrontType = "none";
+          break;
+        case "north_of_highway":
+          subjectClass.isSouthOfHighway = false;
+          subjectClass.hasWaterfront = false;
+          subjectClass.waterfrontType = "none";
+          break;
+        case "village":
+          subjectClass.locationType = "village_hamlet";
+          break;
+      }
     }
 
     console.log(`[SmartComps v4] ${isValuationMode ? "VALUATION" : "COMP"} mode: ${subject.address || subject.village}, ${subject.price ? "$" + subject.price.toLocaleString() : "no price"}, micro_market=${microMarket || "auto"}${conditionFilter ? ", condition=" + conditionFilter : ""}${locationTierFilter ? ", tier=" + locationTierFilter : ""}`);
@@ -836,14 +871,26 @@ smartCompsRouter.post("/analyze", async (c) => {
         if (!conditionFilter) return true;
         return comp.condition === conditionFilter;
       })
-      // Location tier filter: only keep comps in the same tier
+      // Location tier filter: only keep comps matching the selected location type
       .filter(comp => {
         if (!locationTierFilter) return true;
-        const compTier = getMarketTier(comp.village || "");
-        const tierMap: Record<string, string> = {
-          "trophy": "trophy", "prime": "prime", "premium": "premium", "core": "core", "entry": "entry"
-        };
-        return compTier === tierMap[locationTierFilter];
+        const cc = comp.classification;
+        switch (locationTierFilter) {
+          case "oceanfront":
+            return cc.locationType === "tier1_oceanfront" || cc.waterfrontType === "ocean";
+          case "pondfront":
+            return cc.waterfrontType === "pond";
+          case "bayfront":
+            return cc.waterfrontType === "bay" || cc.waterfrontType === "harbor";
+          case "south_of_highway":
+            return cc.isSouthOfHighway && !cc.hasWaterfront;
+          case "north_of_highway":
+            return !cc.isSouthOfHighway;
+          case "village":
+            return cc.locationType === "village_hamlet" || cc.locationType === "eh_village_fringe";
+          default:
+            return true;
+        }
       })
       .filter(comp => comp.relevance_score >= 10)
       .sort((a, b) => b.relevance_score - a.relevance_score)
