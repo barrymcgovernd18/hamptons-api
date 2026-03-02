@@ -88,7 +88,48 @@ interface CompSale {
   days_on_market: number | null;
   property_type: string | null;
   notes: string | null;
+  micro_market: string | null;
 }
+
+/** All available micro-markets */
+const MICRO_MARKETS = [
+  "amagansett", "bridgehampton_soh", "bridgehampton_noh",
+  "east_hampton_soh", "east_hampton_village", "eh_village_fringe",
+  "montauk", "north_sea", "northwest_woods",
+  "oceanfront", "sag_harbor", "sag_harbor_waterfront",
+  "sagaponack_soh", "sagaponack_noh", "shelter_island",
+  "southampton_soh", "southampton_noh", "springs",
+  "wainscott_soh", "wainscott_noh",
+  "water_mill_soh", "water_mill_noh",
+  "waterfront_soh",
+] as const;
+
+/** Map micro-markets to related micro-markets for fallback */
+const MICRO_MARKET_FALLBACKS: Record<string, string[]> = {
+  "bridgehampton_soh": ["bridgehampton_soh", "sagaponack_soh", "water_mill_soh", "wainscott_soh"],
+  "bridgehampton_noh": ["bridgehampton_noh", "water_mill_noh", "sagaponack_noh", "wainscott_noh"],
+  "sagaponack_soh": ["sagaponack_soh", "bridgehampton_soh", "water_mill_soh", "wainscott_soh"],
+  "sagaponack_noh": ["sagaponack_noh", "bridgehampton_noh", "water_mill_noh"],
+  "water_mill_soh": ["water_mill_soh", "bridgehampton_soh", "sagaponack_soh", "southampton_soh"],
+  "water_mill_noh": ["water_mill_noh", "bridgehampton_noh", "southampton_noh"],
+  "wainscott_soh": ["wainscott_soh", "bridgehampton_soh", "sagaponack_soh", "east_hampton_soh"],
+  "wainscott_noh": ["wainscott_noh", "bridgehampton_noh", "east_hampton_village"],
+  "east_hampton_soh": ["east_hampton_soh", "wainscott_soh", "amagansett"],
+  "east_hampton_village": ["east_hampton_village", "eh_village_fringe", "wainscott_noh"],
+  "eh_village_fringe": ["eh_village_fringe", "east_hampton_village", "northwest_woods"],
+  "southampton_soh": ["southampton_soh", "water_mill_soh", "bridgehampton_soh"],
+  "southampton_noh": ["southampton_noh", "water_mill_noh", "north_sea"],
+  "amagansett": ["amagansett", "east_hampton_soh", "montauk"],
+  "montauk": ["montauk", "amagansett"],
+  "sag_harbor": ["sag_harbor", "sag_harbor_waterfront", "bridgehampton_noh"],
+  "sag_harbor_waterfront": ["sag_harbor_waterfront", "sag_harbor", "waterfront_soh"],
+  "shelter_island": ["shelter_island"],
+  "springs": ["springs", "northwest_woods"],
+  "northwest_woods": ["northwest_woods", "eh_village_fringe", "springs"],
+  "north_sea": ["north_sea", "southampton_noh"],
+  "oceanfront": ["oceanfront", "waterfront_soh"],
+  "waterfront_soh": ["waterfront_soh", "oceanfront", "sag_harbor_waterfront"],
+};
 
 interface ScoredComp extends CompSale {
   relevance_score: number;
@@ -260,7 +301,38 @@ function scoreComp(
 // SUPABASE QUERY
 // =============================================================================
 
-async function fetchComps(
+/**
+ * Primary query: fetch by micro_market (preferred)
+ */
+async function fetchCompsByMicroMarket(
+  microMarkets: string[],
+  minPrice: number,
+  maxPrice: number,
+): Promise<CompSale[]> {
+  if (!SUPABASE_KEY) throw new Error("Supabase key not configured");
+
+  const mmFilter = microMarkets.map(m => `micro_market.eq.${encodeURIComponent(m)}`).join(",");
+  const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=*&or=(${mmFilter})&sold_price=gte.${minPrice}&sold_price=lte.${maxPrice}&order=sold_price.desc&limit=300`;
+
+  console.log(`[SmartComps] Query by micro_market: [${microMarkets.join(", ")}], $${minPrice.toLocaleString()}-$${maxPrice.toLocaleString()}`);
+
+  const res = await fetch(url, {
+    headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`[SmartComps] Supabase error: ${res.status} ${errText}`);
+    throw new Error(`Supabase query failed: ${res.status}`);
+  }
+
+  return res.json() as Promise<CompSale[]>;
+}
+
+/**
+ * Fallback query: fetch by village name (for records without micro_market)
+ */
+async function fetchCompsByVillage(
   villages: string[],
   minPrice: number,
   maxPrice: number,
@@ -270,21 +342,11 @@ async function fetchComps(
   const villageFilter = villages.map(v => `village.ilike.${encodeURIComponent(v)}`).join(",");
   const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=*&or=(${villageFilter})&sold_price=gte.${minPrice}&sold_price=lte.${maxPrice}&order=sold_price.desc&limit=300`;
 
-  console.log(`[SmartComps] Query: villages=[${villages.join(", ")}], price=$${minPrice.toLocaleString()}-$${maxPrice.toLocaleString()}`);
-
   const res = await fetch(url, {
-    headers: {
-      "apikey": SUPABASE_KEY,
-      "Authorization": `Bearer ${SUPABASE_KEY}`,
-    },
+    headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
   });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    console.error(`[SmartComps] Supabase error: ${res.status} ${errText}`);
-    throw new Error(`Supabase query failed: ${res.status}`);
-  }
-
+  if (!res.ok) throw new Error(`Supabase query failed: ${res.status}`);
   return res.json() as Promise<CompSale[]>;
 }
 
@@ -300,6 +362,7 @@ const smartCompSchema = z.object({
   baths: z.number().optional(),
   sqft: z.number().optional(),
   lot_acres: z.number().optional(),
+  micro_market: z.string().optional(), // e.g. "bridgehampton_soh" - primary search key
   max_results: z.number().min(3).max(20).optional().default(10),
 });
 
@@ -325,60 +388,77 @@ smartCompsRouter.post("/analyze", async (c) => {
 
     // Classify the subject property
     const subjectClass = classifyAddress(subject.address || "", subject.village);
+    const microMarket = subject.micro_market || null;
 
-    console.log(`[SmartComps v3] Analyzing: ${subject.address || subject.village}, $${subject.price.toLocaleString()}`);
+    console.log(`[SmartComps v3] Analyzing: ${subject.address || subject.village}, $${subject.price.toLocaleString()}, micro_market=${microMarket || "auto"}`);
     console.log(`[SmartComps v3] Classification: ${subjectClass.locationType}, tier=${subjectClass.locationTier}, SOH=${subjectClass.isSouthOfHighway}, waterfront=${subjectClass.waterfrontType}, premium=${subjectClass.streetPremium}x`);
 
-    // Choose comp regions based on location type
-    const isOceanfront = subjectClass.locationType === "tier1_oceanfront";
-    const primaryRegion = isOceanfront
-      ? (OCEANFRONT_COMP_REGIONS[normalize(subject.village)] || COMP_REGIONS[normalize(subject.village)] || [normalize(subject.village)])
-      : (COMP_REGIONS[normalize(subject.village)] || [normalize(subject.village)]);
-    const fallbackRegion = FALLBACK_REGIONS[normalize(subject.village)] || primaryRegion;
-
-    // Progressive strategy
-    const strategies = [
-      {
-        label: "primary_tight",
-        villages: primaryRegion,
-        minPrice: Math.round(subject.price * 0.75),
-        maxPrice: Math.round(subject.price * 1.25),
-      },
-      {
-        label: "primary_medium",
-        villages: primaryRegion,
-        minPrice: Math.round(subject.price * 0.60),
-        maxPrice: Math.round(subject.price * 1.40),
-      },
-      {
-        label: "fallback_medium",
-        villages: fallbackRegion,
-        minPrice: Math.round(subject.price * 0.60),
-        maxPrice: Math.round(subject.price * 1.40),
-      },
-      {
-        label: "fallback_wide",
-        villages: fallbackRegion,
-        minPrice: Math.round(subject.price * priceFilter.minRatio),
-        maxPrice: Math.round(subject.price * priceFilter.maxRatio),
-      },
-    ];
-
+    // Build search strategies
     let allComps: CompSale[] = [];
     let strategyUsed = "none";
 
-    for (const strategy of strategies) {
-      const comps = await fetchComps(strategy.villages, strategy.minPrice, strategy.maxPrice);
-      console.log(`[SmartComps v3] Strategy "${strategy.label}": ${comps.length} comps`);
+    if (microMarket) {
+      // MICRO-MARKET MODE: Direct lookup using pre-classified data
+      const primaryMMs = [microMarket];
+      const fallbackMMs = MICRO_MARKET_FALLBACKS[microMarket] || [microMarket];
 
-      if (comps.length >= 5) {
-        allComps = comps;
-        strategyUsed = strategy.label;
-        break;
+      const strategies = [
+        { label: "mm_tight", markets: primaryMMs, min: 0.75, max: 1.25 },
+        { label: "mm_medium", markets: primaryMMs, min: 0.60, max: 1.40 },
+        { label: "mm_fallback_tight", markets: fallbackMMs, min: 0.70, max: 1.30 },
+        { label: "mm_fallback_wide", markets: fallbackMMs, min: priceFilter.minRatio, max: priceFilter.maxRatio },
+      ];
+
+      for (const strategy of strategies) {
+        const comps = await fetchCompsByMicroMarket(
+          strategy.markets,
+          Math.round(subject.price * strategy.min),
+          Math.round(subject.price * strategy.max)
+        );
+        console.log(`[SmartComps v3] Strategy "${strategy.label}": ${comps.length} comps`);
+
+        if (comps.length >= 5) {
+          allComps = comps;
+          strategyUsed = strategy.label;
+          break;
+        }
+        if (comps.length > allComps.length) {
+          allComps = comps;
+          strategyUsed = strategy.label;
+        }
       }
-      if (comps.length > allComps.length) {
-        allComps = comps;
-        strategyUsed = strategy.label;
+    } else {
+      // VILLAGE MODE: Use comp regions with classification-based filtering
+      const isOceanfront = subjectClass.locationType === "tier1_oceanfront";
+      const primaryRegion = isOceanfront
+        ? (OCEANFRONT_COMP_REGIONS[normalize(subject.village)] || COMP_REGIONS[normalize(subject.village)] || [normalize(subject.village)])
+        : (COMP_REGIONS[normalize(subject.village)] || [normalize(subject.village)]);
+      const fallbackRegion = FALLBACK_REGIONS[normalize(subject.village)] || primaryRegion;
+
+      const strategies = [
+        { label: "village_tight", villages: primaryRegion, min: 0.75, max: 1.25 },
+        { label: "village_medium", villages: primaryRegion, min: 0.60, max: 1.40 },
+        { label: "village_fallback", villages: fallbackRegion, min: 0.60, max: 1.40 },
+        { label: "village_wide", villages: fallbackRegion, min: priceFilter.minRatio, max: priceFilter.maxRatio },
+      ];
+
+      for (const strategy of strategies) {
+        const comps = await fetchCompsByVillage(
+          strategy.villages,
+          Math.round(subject.price * strategy.min),
+          Math.round(subject.price * strategy.max)
+        );
+        console.log(`[SmartComps v3] Strategy "${strategy.label}": ${comps.length} comps`);
+
+        if (comps.length >= 5) {
+          allComps = comps;
+          strategyUsed = strategy.label;
+          break;
+        }
+        if (comps.length > allComps.length) {
+          allComps = comps;
+          strategyUsed = strategy.label;
+        }
       }
     }
 
@@ -438,6 +518,7 @@ smartCompsRouter.post("/analyze", async (c) => {
         beds: subject.beds,
         baths: subject.baths,
         sqft: subject.sqft,
+        micro_market: microMarket,
         classification: subjectClass,
       },
       strategy_used: strategyUsed,
@@ -459,6 +540,7 @@ smartCompsRouter.post("/analyze", async (c) => {
         price_difference_pct: comp.price_difference_pct,
         days_ago: comp.days_ago,
         market_tier: getMarketTier(comp.village || ""),
+        micro_market: comp.micro_market,
         source: comp.source,
       })),
       stats,
@@ -518,6 +600,43 @@ smartCompsRouter.get("/classify", (c) => {
 
   const classification = classifyAddress(address, village);
   return c.json({ success: true, address, village, classification });
+});
+
+/**
+ * GET /api/smart-comps/micro-markets
+ * Returns all available micro-markets with record counts
+ */
+smartCompsRouter.get("/micro-markets", async (c) => {
+  try {
+    const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=micro_market&limit=10000`;
+    const res = await fetch(url, {
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+    });
+
+    if (!res.ok) return c.json({ success: false, error: "Failed to fetch" }, 500);
+
+    const data = await res.json() as Array<{ micro_market: string }>;
+    const counts: Record<string, number> = {};
+    for (const row of data) {
+      const mm = row.micro_market || "unclassified";
+      counts[mm] = (counts[mm] || 0) + 1;
+    }
+
+    const microMarkets = Object.entries(counts)
+      .map(([name, count]) => ({
+        key: name,
+        label: name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+          .replace("Soh", "South of Highway").replace("Noh", "North of Highway")
+          .replace("Eh ", "East Hampton "),
+        count,
+        fallback_markets: MICRO_MARKET_FALLBACKS[name] || [name],
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return c.json({ success: true, micro_markets: microMarkets, total: data.length });
+  } catch (error: any) {
+    return c.json({ success: false, error: "Failed" }, 500);
+  }
 });
 
 /**
