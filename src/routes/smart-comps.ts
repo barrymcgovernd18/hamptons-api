@@ -667,6 +667,9 @@ const smartCompSchema = z.object({
   lot_acres: z.number().optional(),
   micro_market: z.string().optional(),
   max_results: z.number().min(3).max(20).optional().default(15),
+  // Optional overrides — when set, these filter comps instead of auto-detecting
+  condition: z.enum(["teardown", "needs_renovation", "normal", "new_construction"]).optional(),
+  location_tier: z.enum(["trophy", "prime", "premium", "core", "entry"]).optional(),
 });
 
 // =============================================================================
@@ -693,11 +696,21 @@ smartCompsRouter.post("/analyze", async (c) => {
     const targetCount = subject.max_results;
     const microMarket = subject.micro_market || null;
     const isValuationMode = !subject.price;
+    const conditionFilter = subject.condition || null;
+    const locationTierFilter = subject.location_tier || null;
 
     // Classify the subject property
     const subjectClass = classifyAddress(subject.address || "", subject.village);
 
-    console.log(`[SmartComps v4] ${isValuationMode ? "VALUATION" : "COMP"} mode: ${subject.address || subject.village}, ${subject.price ? "$" + subject.price.toLocaleString() : "no price"}, micro_market=${microMarket || "auto"}`);
+    // Override location tier if user specified one
+    if (locationTierFilter) {
+      const tierMap: Record<string, string> = {
+        "trophy": "Trophy", "prime": "Prime", "premium": "Premium", "core": "Core", "entry": "Entry"
+      };
+      subjectClass.locationTier = tierMap[locationTierFilter] || subjectClass.locationTier;
+    }
+
+    console.log(`[SmartComps v4] ${isValuationMode ? "VALUATION" : "COMP"} mode: ${subject.address || subject.village}, ${subject.price ? "$" + subject.price.toLocaleString() : "no price"}, micro_market=${microMarket || "auto"}${conditionFilter ? ", condition=" + conditionFilter : ""}${locationTierFilter ? ", tier=" + locationTierFilter : ""}`);
 
     // Fetch comps
     let allComps: CompSale[] = [];
@@ -818,6 +831,20 @@ smartCompsRouter.post("/analyze", async (c) => {
         const compat = areComparable(subjectClass, comp.classification);
         return compat.comparable;
       })
+      // Condition filter: only keep comps matching the user's selected condition
+      .filter(comp => {
+        if (!conditionFilter) return true;
+        return comp.condition === conditionFilter;
+      })
+      // Location tier filter: only keep comps in the same tier
+      .filter(comp => {
+        if (!locationTierFilter) return true;
+        const compTier = getMarketTier(comp.village || "");
+        const tierMap: Record<string, string> = {
+          "trophy": "trophy", "prime": "prime", "premium": "premium", "core": "core", "entry": "entry"
+        };
+        return compTier === tierMap[locationTierFilter];
+      })
       .filter(comp => comp.relevance_score >= 10)
       .sort((a, b) => b.relevance_score - a.relevance_score)
       .slice(0, targetCount);
@@ -865,6 +892,8 @@ smartCompsRouter.post("/analyze", async (c) => {
         lot_acres: subject.lot_acres,
         micro_market: microMarket,
         classification: subjectClass,
+        condition_filter: conditionFilter,
+        location_tier_filter: locationTierFilter,
       },
       valuation,
       strategy_used: strategyUsed,
