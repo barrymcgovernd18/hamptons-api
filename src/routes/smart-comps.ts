@@ -493,6 +493,15 @@ function scoreComp(
     scores.prime_road_match = 5;
   }
 
+  // --- Condition match bonus (non-land) ---
+  if (subject.condition && !isLandSearch) {
+    if (comp.condition === subject.condition) {
+      scores.special_bonus += 8; // Reward matching condition
+    } else if (comp.condition !== "unknown") {
+      scores.special_bonus -= 3; // Small penalty for known mismatch
+    }
+  }
+
   // --- Special bonuses for condition-specific searches ---
   if (isLandSearch) {
     // SOH teardown: prefer new construction comps
@@ -1038,14 +1047,10 @@ smartCompsRouter.post("/analyze", async (c) => {
         if (!compat.comparable && compat.penalty <= -25) return false; // Hard reject (Springs vs Village etc)
         return true;
       })
-      // Condition filter: for land_needs_work, use scoring bonuses instead of hard-filter
-      // Unknown condition (no sqft data) always passes — can't exclude what we can't detect
-      .filter(comp => {
-        if (!conditionFilter) return true;
-        if (conditionFilter === "land_needs_work") return true; // Handled by special scoring bonuses
-        if (comp.condition === "unknown") return true; // Can't detect, don't exclude
-        return comp.condition === conditionFilter;
-      })
+      // Condition filter: soft filter — prefer matching condition but don't hard-exclude
+      // We apply condition as scoring preference, not hard filter, to avoid cutting comps too aggressively
+      // (Many oceanfront comps are misclassified as "new_construction" due to high PSF)
+      // The condition match bonus in scoreComp already rewards matching conditions
       // Location tier filter: only keep comps matching the selected location type
       .filter(comp => {
         if (!locationTierFilter) return true;
