@@ -1,19 +1,36 @@
 /**
- * Smart Comp Analysis API v2
+ * Smart Comp Analysis API v3
  * 
- * Hamptons-specific comp analysis with Barry's market intelligence:
- * - SOH/NOH geographic tier matching
- * - Street/lane premium awareness
+ * Full Hamptons market intelligence:
+ * - Runtime address classification (oceanfront/SOH waterfront/prime SOH/NOH)
  * - Waterfront type matching (ocean, bay, pond, creek)
- * - Village comp region rules (never comp Southampton oceanfront vs East Hampton)
- * - Tier-based scoring (Trophy, Upper, Core, Entry)
+ * - SOH/NOH enforcement (never comp oceanfront vs inland)
+ * - Street premium awareness
+ * - Village comp region rules
+ * - Tier-based scoring with penalties
  * - Time appreciation adjustments
- * - Condition detection
- * - Progressive widening with market-aware fallbacks
  */
 
 import { Hono } from "hono";
 import { z } from "zod";
+import {
+  classifyAddress,
+  areComparable,
+  LocationClassification,
+  COMP_REGIONS,
+  OCEANFRONT_COMP_REGIONS,
+  FALLBACK_REGIONS,
+  HAMLET_TIERS,
+  HAMLET_BASE_VALUES,
+  TIER_RANK,
+  STREET_PREMIUMS,
+  WATERFRONT_PREMIUMS,
+  TIME_ADJUSTMENTS,
+  PRICE_FILTERS,
+  SCORING,
+  type MarketTier,
+  type WaterfrontType,
+} from "../data/hamptons-market-data.js";
 
 const smartCompsRouter = new Hono();
 
@@ -23,121 +40,7 @@ const envKey = process.env.SUPABASE_ANON_KEY;
 const SUPABASE_KEY = (envKey && envKey.startsWith("eyJ")) ? envKey : SUPABASE_ANON;
 
 // =============================================================================
-// MARKET INTELLIGENCE DATA (from Barry's knowledge)
-// =============================================================================
-
-/** Hamlet base values (per acre, fallback when no comps) */
-const HAMLET_BASE_VALUES: Record<string, number> = {
-  "east hampton": 8_000_000,
-  "southampton": 7_500_000,
-  "southampton village": 7_500_000,
-  "sagaponack": 9_000_000,
-  "bridgehampton": 6_500_000,
-  "water mill": 5_500_000,
-  "wainscott": 5_000_000,
-  "amagansett": 5_000_000,
-  "sag harbor": 4_000_000,
-  "montauk": 3_500_000,
-  "shelter island": 2_500_000,
-  "shelter island heights": 2_500_000,
-  "springs": 1_100_000,
-};
-
-/** Hamlet market tiers */
-type MarketTier = "trophy" | "upper" | "core" | "entry";
-const HAMLET_TIERS: Record<string, MarketTier> = {
-  "east hampton": "trophy",
-  "sagaponack": "trophy",
-  "water mill": "trophy",
-  "southampton": "upper",
-  "southampton village": "upper",
-  "amagansett": "upper",
-  "sag harbor": "core",
-  "shelter island": "core",
-  "shelter island heights": "core",
-  "wainscott": "core",
-  "bridgehampton": "core",
-  "montauk": "entry",
-  "springs": "entry",
-};
-
-const TIER_RANK: Record<MarketTier, number> = {
-  trophy: 4, upper: 3, core: 2, entry: 1,
-};
-
-/** Street premiums (multiplier on top of base value) */
-const STREET_PREMIUMS: Record<string, Record<string, number>> = {
-  "southampton": {
-    "gin lane": 1.35, "meadow lane": 1.30, "ox pasture road": 1.15,
-    "first neck lane": 1.12, "coopers neck lane": 1.12, "halsey neck lane": 1.10,
-  },
-  "southampton village": {
-    "gin lane": 1.35, "meadow lane": 1.30, "ox pasture road": 1.15,
-    "first neck lane": 1.12, "coopers neck lane": 1.12, "halsey neck lane": 1.10,
-  },
-  "east hampton": {
-    "lily pond lane": 1.30, "further lane": 1.25,
-    "west end road": 1.20, "georgica close": 1.15,
-  },
-  "sagaponack": {
-    "daniels lane": 1.20, "parsonage lane": 1.15,
-  },
-  "water mill": {
-    "flying point road": 1.15, "mecox road": 1.10,
-  },
-  "bridgehampton": {
-    "ocean road": 1.15, "jobs lane": 1.10,
-  },
-};
-
-/** Village comp regions — ONLY comp within these groups */
-const COMP_REGIONS: Record<string, string[]> = {
-  "southampton": ["southampton", "southampton village"],
-  "southampton village": ["southampton", "southampton village"],
-  "bridgehampton": ["bridgehampton", "sagaponack", "water mill", "wainscott"],
-  "sagaponack": ["bridgehampton", "sagaponack", "water mill", "wainscott"],
-  "water mill": ["bridgehampton", "sagaponack", "water mill", "wainscott"],
-  "wainscott": ["bridgehampton", "sagaponack", "water mill", "wainscott"],
-  "east hampton": ["east hampton", "wainscott"],
-  "amagansett": ["amagansett", "montauk"],
-  "montauk": ["amagansett", "montauk"],
-  "sag harbor": ["sag harbor", "bridgehampton", "east hampton"],
-  "shelter island": ["shelter island", "shelter island heights"],
-  "shelter island heights": ["shelter island", "shelter island heights"],
-  "springs": ["springs"],
-};
-
-/** SOH waterfront fallback regions (wider search) */
-const FALLBACK_REGIONS: Record<string, string[]> = {
-  "water mill": ["water mill", "bridgehampton", "sagaponack", "southampton", "wainscott"],
-  "bridgehampton": ["bridgehampton", "water mill", "sagaponack", "wainscott", "east hampton"],
-  "sagaponack": ["sagaponack", "bridgehampton", "water mill", "wainscott"],
-  "southampton": ["southampton", "southampton village", "water mill", "bridgehampton"],
-  "southampton village": ["southampton", "southampton village", "water mill", "bridgehampton"],
-  "wainscott": ["wainscott", "bridgehampton", "sagaponack", "east hampton", "water mill"],
-  "east hampton": ["east hampton", "wainscott", "bridgehampton", "amagansett"],
-  "amagansett": ["amagansett", "east hampton", "montauk"],
-  "sag harbor": ["sag harbor", "bridgehampton", "east hampton"],
-  "shelter island": ["shelter island", "shelter island heights"],
-  "montauk": ["montauk", "amagansett"],
-};
-
-/** Time appreciation adjustments */
-const TIME_ADJUSTMENTS: Record<string, number> = {
-  "2020": 1.22, "2021": 1.15, "2022": 1.10,
-  "2023": 1.05, "2024": 1.02, "2025": 1.00, "2026": 1.00,
-};
-
-/** Price proximity filtering by tier */
-const PRICE_FILTERS: Record<string, { minRatio: number; maxRatio: number }> = {
-  "20m_plus": { minRatio: 0.35, maxRatio: 2.00 },
-  "10m_20m": { minRatio: 0.30, maxRatio: 2.20 },
-  "5m_10m": { minRatio: 0.25, maxRatio: 2.50 },
-  "under_5m": { minRatio: 0.20, maxRatio: 3.00 },
-};
-
-// =============================================================================
-// HELPER FUNCTIONS
+// HELPERS
 // =============================================================================
 
 function normalize(s: string): string {
@@ -146,31 +49,6 @@ function normalize(s: string): string {
 
 function getMarketTier(village: string): MarketTier {
   return HAMLET_TIERS[normalize(village)] || "core";
-}
-
-function getCompRegion(village: string): string[] {
-  return COMP_REGIONS[normalize(village)] || [normalize(village)];
-}
-
-function getFallbackRegion(village: string): string[] {
-  return FALLBACK_REGIONS[normalize(village)] || getCompRegion(village);
-}
-
-function getStreetPremium(village: string, address: string): number {
-  const premiums = STREET_PREMIUMS[normalize(village)];
-  if (!premiums) return 1.0;
-  const addr = normalize(address);
-  for (const [street, mult] of Object.entries(premiums)) {
-    if (addr.includes(street)) return mult;
-  }
-  return 1.0;
-}
-
-function getPriceFilter(price: number) {
-  if (price >= 20_000_000) return PRICE_FILTERS["20m_plus"];
-  if (price >= 10_000_000) return PRICE_FILTERS["10m_20m"];
-  if (price >= 5_000_000) return PRICE_FILTERS["5m_10m"];
-  return PRICE_FILTERS["under_5m"];
 }
 
 function getTimeAdjustment(soldDate: string | null): number {
@@ -184,8 +62,15 @@ function getDaysAgo(soldDate: string | null): number {
   return Math.floor((Date.now() - new Date(soldDate).getTime()) / (1000 * 60 * 60 * 24));
 }
 
+function getPriceFilter(price: number) {
+  if (price >= 20_000_000) return PRICE_FILTERS["20m_plus"];
+  if (price >= 10_000_000) return PRICE_FILTERS["10m_20m"];
+  if (price >= 5_000_000) return PRICE_FILTERS["5m_10m"];
+  return PRICE_FILTERS["under_5m"];
+}
+
 // =============================================================================
-// SCORING (based on Barry's scoring model)
+// TYPES
 // =============================================================================
 
 interface CompSale {
@@ -209,7 +94,7 @@ interface ScoredComp extends CompSale {
   relevance_score: number;
   adjusted_price: number;
   time_adjustment: number;
-  street_premium: number;
+  classification: LocationClassification;
   score_breakdown: {
     hamlet_match: number;
     tier_match: number;
@@ -217,11 +102,18 @@ interface ScoredComp extends CompSale {
     beds_match: number;
     sqft_match: number;
     recency: number;
+    soh_match: number;
+    waterfront_match: number;
     street_premium_match: number;
+    comparability_adjustment: number;
   };
   price_difference_pct: number;
   days_ago: number;
 }
+
+// =============================================================================
+// SCORING ENGINE
+// =============================================================================
 
 function scoreComp(
   comp: CompSale,
@@ -233,27 +125,41 @@ function scoreComp(
     sqft?: number;
     lot_acres?: number;
     address?: string;
+    classification: LocationClassification;
   }
 ): ScoredComp {
   const scores = {
-    hamlet_match: 0,          // 0-10 pts
-    tier_match: 0,            // 0-25 pts
-    price_proximity: 0,       // 0-30 pts
-    beds_match: 0,            // 0-12 pts
-    sqft_match: 0,            // 0-13 pts
-    recency: 0,               // 0-20 pts
-    street_premium_match: 0,  // 0-7 pts
+    hamlet_match: 0,
+    tier_match: 0,
+    price_proximity: 0,
+    beds_match: 0,
+    sqft_match: 0,
+    recency: 0,
+    soh_match: 0,
+    waterfront_match: 0,
+    street_premium_match: 0,
+    comparability_adjustment: 0,
   };
 
   const subjectVillage = normalize(subject.village);
   const compVillage = normalize(comp.village || "");
 
+  // Classify the comp address
+  const compClass = classifyAddress(comp.address || "", comp.village || "");
+
+  // --- Comparability check ---
+  const compat = areComparable(subject.classification, compClass);
+  scores.comparability_adjustment = compat.penalty;
+
   // --- Hamlet match (10 pts) ---
   if (compVillage === subjectVillage) {
-    scores.hamlet_match = 10;
+    scores.hamlet_match = SCORING.same_hamlet;
   } else {
-    const region = getCompRegion(subject.village);
-    if (region.includes(compVillage)) {
+    // Use oceanfront-specific regions if subject is oceanfront
+    const regions = subject.classification.locationType === "tier1_oceanfront"
+      ? (OCEANFRONT_COMP_REGIONS[subjectVillage] || [])
+      : (COMP_REGIONS[subjectVillage] || []);
+    if (regions.includes(compVillage)) {
       scores.hamlet_match = 6;
     }
   }
@@ -262,11 +168,27 @@ function scoreComp(
   const subjectTier = getMarketTier(subject.village);
   const compTier = getMarketTier(comp.village || "");
   const tierDiff = Math.abs(TIER_RANK[subjectTier] - TIER_RANK[compTier]);
-  
-  if (tierDiff === 0) scores.tier_match = 25;
-  else if (tierDiff === 1) scores.tier_match = 15;
-  else if (tierDiff === 2) scores.tier_match = 8;
-  else scores.tier_match = 0;
+
+  if (tierDiff === 0) scores.tier_match = SCORING.exact_tier_match;
+  else if (tierDiff === 1) scores.tier_match = SCORING.tier1_to_tier2;
+  else if (tierDiff === 2) scores.tier_match = SCORING.tier3_to_tier2_or_tier4;
+  else scores.tier_match = SCORING.different_tier;
+
+  // --- SOH match (8 pts) ---
+  if (subject.classification.isSouthOfHighway === compClass.isSouthOfHighway) {
+    scores.soh_match = SCORING.soh_match;
+  }
+
+  // --- Waterfront match (10 / -15 pts) ---
+  if (subject.classification.hasWaterfront && compClass.hasWaterfront) {
+    if (subject.classification.waterfrontType === compClass.waterfrontType) {
+      scores.waterfront_match = SCORING.waterfront_type_match;
+    } else if (subject.classification.waterfrontType === "ocean" || compClass.waterfrontType === "ocean") {
+      scores.waterfront_match = SCORING.waterfront_mismatch;
+    }
+  } else if (subject.classification.hasWaterfront !== compClass.hasWaterfront) {
+    scores.waterfront_match = SCORING.waterfront_mismatch;
+  }
 
   // --- Time adjustment ---
   const timeAdj = getTimeAdjustment(comp.sold_date);
@@ -284,45 +206,39 @@ function scoreComp(
   // --- Beds match (12 pts) ---
   if (subject.beds && comp.beds) {
     const bedDiff = Math.abs(comp.beds - subject.beds);
-    if (bedDiff === 0) scores.beds_match = 12;
-    else if (bedDiff === 1) scores.beds_match = 8;
-    else if (bedDiff === 2) scores.beds_match = 3;
-    else scores.beds_match = 0;
+    if (bedDiff === 0) scores.beds_match = SCORING.bedrooms_exact;
+    else if (bedDiff === 1) scores.beds_match = SCORING.bedrooms_diff_1;
+    else if (bedDiff === 2) scores.beds_match = SCORING.bedrooms_diff_2;
+    else scores.beds_match = SCORING.bedrooms_diff_3plus;
   } else {
-    scores.beds_match = 4; // Neutral
+    scores.beds_match = 4;
   }
 
   // --- Sqft match (13 pts) ---
   if (subject.sqft && comp.sqft) {
     const sqftDiff = Math.abs(comp.sqft - subject.sqft) / subject.sqft;
-    if (sqftDiff <= 0.15) scores.sqft_match = 13;
-    else if (sqftDiff <= 0.30) scores.sqft_match = 7;
-    else if (sqftDiff <= 0.50) scores.sqft_match = 3;
-    else scores.sqft_match = 0;
+    if (sqftDiff <= 0.15) scores.sqft_match = SCORING.sqft_within_15pct;
+    else if (sqftDiff <= 0.30) scores.sqft_match = SCORING.sqft_within_30pct;
+    else if (sqftDiff <= 0.50) scores.sqft_match = SCORING.sqft_within_50pct;
+    else scores.sqft_match = SCORING.sqft_beyond_50pct;
   } else {
-    scores.sqft_match = 4; // Neutral
+    scores.sqft_match = 4;
   }
 
   // --- Recency (20 pts) ---
   const daysAgo = getDaysAgo(comp.sold_date);
-  if (daysAgo <= 180) scores.recency = 20;
-  else if (daysAgo <= 365) scores.recency = 15;
-  else if (daysAgo <= 540) scores.recency = 10;
-  else if (daysAgo <= 730) scores.recency = 5;
-  else scores.recency = 2;
+  if (daysAgo <= 180) scores.recency = SCORING.recency_0_6mo;
+  else if (daysAgo <= 365) scores.recency = SCORING.recency_6_12mo;
+  else if (daysAgo <= 540) scores.recency = SCORING.recency_12_18mo;
+  else if (daysAgo <= 730) scores.recency = SCORING.recency_18_24mo;
+  else scores.recency = SCORING.recency_24plus;
 
   // --- Street premium match (7 pts) ---
-  const subjectPremium = subject.address ? getStreetPremium(subject.village, subject.address) : 1.0;
-  const compPremium = getStreetPremium(comp.village || "", comp.address || "");
-  
-  if (subjectPremium > 1.0 && compPremium > 1.0) {
-    // Both on premium streets
-    scores.street_premium_match = 7;
-  } else if (subjectPremium === 1.0 && compPremium === 1.0) {
-    // Neither on premium streets
+  if (subject.classification.isPrimeRoad && compClass.isPrimeRoad) {
+    scores.street_premium_match = SCORING.prime_road_match;
+  } else if (!subject.classification.isPrimeRoad && !compClass.isPrimeRoad) {
     scores.street_premium_match = 5;
   } else {
-    // Mismatch — one premium, one not
     scores.street_premium_match = 0;
   }
 
@@ -330,10 +246,10 @@ function scoreComp(
 
   return {
     ...comp,
-    relevance_score: totalScore,
+    relevance_score: Math.max(0, totalScore),
     adjusted_price: adjustedPrice,
     time_adjustment: timeAdj,
-    street_premium: compPremium,
+    classification: compClass,
     score_breakdown: scores,
     price_difference_pct: Math.round(((adjustedPrice - subject.price) / subject.price) * 100),
     days_ago: daysAgo,
@@ -373,7 +289,7 @@ async function fetchComps(
 }
 
 // =============================================================================
-// REQUEST SCHEMA
+// SCHEMA
 // =============================================================================
 
 const smartCompSchema = z.object({
@@ -407,31 +323,38 @@ smartCompsRouter.post("/analyze", async (c) => {
     const targetCount = subject.max_results;
     const priceFilter = getPriceFilter(subject.price);
 
-    console.log(`[SmartComps] Analyzing: ${subject.village}, $${subject.price.toLocaleString()}, ${subject.beds || "?"}bd, tier=${getMarketTier(subject.village)}`);
+    // Classify the subject property
+    const subjectClass = classifyAddress(subject.address || "", subject.village);
 
-    // Get comp regions based on market rules
-    const primaryRegion = getCompRegion(subject.village);
-    const fallbackRegion = getFallbackRegion(subject.village);
+    console.log(`[SmartComps v3] Analyzing: ${subject.address || subject.village}, $${subject.price.toLocaleString()}`);
+    console.log(`[SmartComps v3] Classification: ${subjectClass.locationType}, tier=${subjectClass.locationTier}, SOH=${subjectClass.isSouthOfHighway}, waterfront=${subjectClass.waterfrontType}, premium=${subjectClass.streetPremium}x`);
 
-    // Progressive strategy using market-aware regions
+    // Choose comp regions based on location type
+    const isOceanfront = subjectClass.locationType === "tier1_oceanfront";
+    const primaryRegion = isOceanfront
+      ? (OCEANFRONT_COMP_REGIONS[normalize(subject.village)] || COMP_REGIONS[normalize(subject.village)] || [normalize(subject.village)])
+      : (COMP_REGIONS[normalize(subject.village)] || [normalize(subject.village)]);
+    const fallbackRegion = FALLBACK_REGIONS[normalize(subject.village)] || primaryRegion;
+
+    // Progressive strategy
     const strategies = [
       {
         label: "primary_tight",
         villages: primaryRegion,
-        minPrice: Math.round(subject.price * (1 - 0.25)),
-        maxPrice: Math.round(subject.price * (1 + 0.25)),
+        minPrice: Math.round(subject.price * 0.75),
+        maxPrice: Math.round(subject.price * 1.25),
       },
       {
         label: "primary_medium",
         villages: primaryRegion,
-        minPrice: Math.round(subject.price * (1 - 0.40)),
-        maxPrice: Math.round(subject.price * (1 + 0.40)),
+        minPrice: Math.round(subject.price * 0.60),
+        maxPrice: Math.round(subject.price * 1.40),
       },
       {
         label: "fallback_medium",
         villages: fallbackRegion,
-        minPrice: Math.round(subject.price * (1 - 0.40)),
-        maxPrice: Math.round(subject.price * (1 + 0.40)),
+        minPrice: Math.round(subject.price * 0.60),
+        maxPrice: Math.round(subject.price * 1.40),
       },
       {
         label: "fallback_wide",
@@ -446,7 +369,7 @@ smartCompsRouter.post("/analyze", async (c) => {
 
     for (const strategy of strategies) {
       const comps = await fetchComps(strategy.villages, strategy.minPrice, strategy.maxPrice);
-      console.log(`[SmartComps] Strategy "${strategy.label}": ${comps.length} comps`);
+      console.log(`[SmartComps v3] Strategy "${strategy.label}": ${comps.length} comps`);
 
       if (comps.length >= 5) {
         allComps = comps;
@@ -463,27 +386,35 @@ smartCompsRouter.post("/analyze", async (c) => {
       return c.json({
         success: true,
         message: "No comparable sales found matching criteria",
-        subject: { village: subject.village, price: subject.price, beds: subject.beds },
+        subject: {
+          village: subject.village,
+          price: subject.price,
+          beds: subject.beds,
+          classification: subjectClass,
+        },
         strategy_used: strategyUsed,
-        market_tier: getMarketTier(subject.village),
-        comp_region: primaryRegion,
         comps: [],
         stats: null,
       });
     }
 
-    // Score, filter, and rank
+    // Score, filter by comparability, rank
     const scored = allComps
-      .map(comp => scoreComp(comp, subject))
-      .filter(comp => comp.relevance_score >= 20) // Quality threshold
+      .map(comp => scoreComp(comp, { ...subject, classification: subjectClass }))
+      .filter(comp => {
+        // Hard filter: non-comparable properties removed entirely
+        const compat = areComparable(subjectClass, comp.classification);
+        return compat.comparable;
+      })
+      .filter(comp => comp.relevance_score >= 15)
       .sort((a, b) => b.relevance_score - a.relevance_score)
       .slice(0, targetCount);
 
     // Stats
     const prices = scored.map(c => c.adjusted_price);
     const ppsf = scored.filter(c => c.price_per_sqft).map(c => c.price_per_sqft!);
-    
-    const stats = {
+
+    const stats = prices.length > 0 ? {
       comp_count: scored.length,
       avg_price: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length),
       median_price: prices.sort((a, b) => a - b)[Math.floor(prices.length / 2)],
@@ -494,12 +425,9 @@ smartCompsRouter.post("/analyze", async (c) => {
         : null,
       avg_days_ago: Math.round(scored.reduce((a, b) => a + b.days_ago, 0) / scored.length),
       avg_relevance_score: Math.round(scored.reduce((a, b) => a + b.relevance_score, 0) / scored.length),
-      subject_market_tier: getMarketTier(subject.village),
-      subject_street_premium: subject.address ? getStreetPremium(subject.village, subject.address) : 1.0,
-      hamlet_base_value: HAMLET_BASE_VALUES[normalize(subject.village)] || null,
-    };
+    } : null;
 
-    console.log(`[SmartComps] Returning ${scored.length} comps (strategy: ${strategyUsed}, avg score: ${stats.avg_relevance_score})`);
+    console.log(`[SmartComps v3] Returning ${scored.length} comps (strategy: ${strategyUsed}, avg score: ${stats?.avg_relevance_score || 0})`);
 
     return c.json({
       success: true,
@@ -510,9 +438,7 @@ smartCompsRouter.post("/analyze", async (c) => {
         beds: subject.beds,
         baths: subject.baths,
         sqft: subject.sqft,
-        market_tier: getMarketTier(subject.village),
-        comp_region: primaryRegion,
-        street_premium: subject.address ? getStreetPremium(subject.village, subject.address) : 1.0,
+        classification: subjectClass,
       },
       strategy_used: strategyUsed,
       comps: scored.map(comp => ({
@@ -527,7 +453,7 @@ smartCompsRouter.post("/analyze", async (c) => {
         sqft: comp.sqft,
         lot_acres: comp.lot_acres,
         price_per_sqft: comp.price_per_sqft,
-        street_premium: comp.street_premium,
+        classification: comp.classification,
         relevance_score: comp.relevance_score,
         score_breakdown: comp.score_breakdown,
         price_difference_pct: comp.price_difference_pct,
@@ -538,7 +464,7 @@ smartCompsRouter.post("/analyze", async (c) => {
       stats,
     });
   } catch (error: any) {
-    console.error("[SmartComps] Error:", error?.message || error);
+    console.error("[SmartComps v3] Error:", error?.message || error);
     return c.json({ success: false, error: "Failed to analyze comps", details: error?.message }, 500);
   }
 });
@@ -568,20 +494,34 @@ smartCompsRouter.get("/villages", async (c) => {
         count,
         market_tier: getMarketTier(name),
         base_value: HAMLET_BASE_VALUES[normalize(name)] || null,
-        comp_region: getCompRegion(name),
       }))
       .sort((a, b) => b.count - a.count);
 
     return c.json({ success: true, villages, total: data.length });
   } catch (error: any) {
-    console.error("[SmartComps] Villages error:", error?.message);
+    console.error("[SmartComps v3] Villages error:", error?.message);
     return c.json({ success: false, error: "Failed" }, 500);
   }
 });
 
 /**
+ * GET /api/smart-comps/classify?address=xxx&village=yyy
+ * Classify any address (useful for testing/debugging)
+ */
+smartCompsRouter.get("/classify", (c) => {
+  const address = c.req.query("address") || "";
+  const village = c.req.query("village") || "";
+  
+  if (!address || !village) {
+    return c.json({ success: false, error: "address and village required" }, 400);
+  }
+
+  const classification = classifyAddress(address, village);
+  return c.json({ success: true, address, village, classification });
+});
+
+/**
  * GET /api/smart-comps/market-data
- * Returns all market intelligence data (tiers, premiums, regions)
  */
 smartCompsRouter.get("/market-data", (c) => {
   return c.json({
@@ -589,12 +529,11 @@ smartCompsRouter.get("/market-data", (c) => {
     hamlet_base_values: HAMLET_BASE_VALUES,
     hamlet_tiers: HAMLET_TIERS,
     street_premiums: STREET_PREMIUMS,
-    comp_regions: COMP_REGIONS,
-    fallback_regions: FALLBACK_REGIONS,
+    waterfront_premiums: WATERFRONT_PREMIUMS,
+    scoring_weights: SCORING,
     time_adjustments: TIME_ADJUSTMENTS,
     price_filters: PRICE_FILTERS,
   });
 });
 
 export { smartCompsRouter };
-
