@@ -777,18 +777,60 @@ const smartCompSchema = z.object({
   lot_acres: z.number().optional(),
   micro_market: z.string().optional(),
   max_results: z.number().min(3).max(20).optional().default(15),
-  // Optional overrides — when set, these filter comps instead of auto-detecting
-  condition: z.enum(["land_needs_work", "existing_home", "renovated", "new_construction"]).optional(),
-  location_tier: z.enum([
-    "auto",           // AI determines (default, same as omitting)
-    "oceanfront",     // Tier 1 oceanfront
-    "pondfront",      // Pond/lake waterfront
-    "bayfront",       // Bay/harbor waterfront
-    "south_of_highway", // SOH non-waterfront
-    "north_of_highway", // NOH
-    "village",        // Village/Town center
-  ]).optional(),
+  // Condition — accepts both our format and Vibecode's format
+  condition: z.string().optional(),
+  // Location tier — accepts both our format and Vibecode's format
+  location_tier: z.string().optional(),
+  // Build quality — from Vibecode frontend (only when condition = new_construction)
+  build_quality: z.enum(["standard", "high_end", "ultra_luxury"]).optional(),
 });
+
+// Normalize condition values (accept both formats)
+function normalizeCondition(val?: string): string | null {
+  if (!val) return null;
+  const map: Record<string, string> = {
+    "land_needs_work": "land_needs_work",
+    "land": "land_needs_work",
+    "teardown": "land_needs_work",
+    "existing_home": "existing_home",
+    "existing": "existing_home",
+    "normal": "existing_home",
+    "renovated": "renovated",
+    "new_construction": "new_construction",
+    "new": "new_construction",
+  };
+  return map[val.toLowerCase()] || null;
+}
+
+// Normalize location tier values (accept both formats)
+function normalizeLocationTier(val?: string): string | null {
+  if (!val || val === "auto") return null;
+  const map: Record<string, string> = {
+    // Our format
+    "oceanfront": "oceanfront",
+    "pondfront": "pondfront",
+    "bayfront": "bayfront",
+    "south_of_highway": "south_of_highway",
+    "north_of_highway": "north_of_highway",
+    "village": "village",
+    // Vibecode format
+    "tier1_oceanfront": "oceanfront",
+    "tier2_prime_soh": "south_of_highway",
+    "tier3_soh": "south_of_highway",
+    "tier4_noh": "north_of_highway",
+    "soh_waterfront": "bayfront",
+    "noh_waterfront": "north_of_highway",
+    "village_hamlet": "village",
+    // Multi-market tiers
+    "trophy": "oceanfront",
+    "prime": "south_of_highway",
+    "premium": "south_of_highway",
+    "core": "north_of_highway",
+    "waterfront": "bayfront",
+    "entry": "north_of_highway",
+  };
+  return map[val.toLowerCase()] || null;
+}
 
 // =============================================================================
 // ROUTES
@@ -814,9 +856,9 @@ smartCompsRouter.post("/analyze", async (c) => {
     const targetCount = subject.max_results;
     const microMarket = subject.micro_market || null;
     const isValuationMode = !subject.price;
-    const conditionFilter = subject.condition || null;
-    const locationTierFilter = subject.location_tier && subject.location_tier !== "auto" 
-      ? subject.location_tier : null;
+    const conditionFilter = normalizeCondition(subject.condition);
+    const locationTierFilter = normalizeLocationTier(subject.location_tier);
+    const buildQuality = subject.build_quality || null;
 
     // Classify the subject property
     const subjectClass = classifyAddress(subject.address || "", subject.village);
@@ -1054,6 +1096,7 @@ smartCompsRouter.post("/analyze", async (c) => {
         classification: subjectClass,
         condition_filter: conditionFilter,
         location_tier_filter: locationTierFilter,
+        build_quality: buildQuality,
       },
       valuation,
       strategy_used: strategyUsed,
