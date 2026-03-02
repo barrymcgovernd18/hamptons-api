@@ -2,14 +2,17 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider      = "prisma-client-js"
-  binaryTargets = ["native", "debian-openssl-3.0.x"]
+  provider        = "prisma-client-js"
+  binaryTargets   = ["native", "debian-openssl-3.0.x"]
+  previewFeatures = ["multiSchema"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  schemas  = ["public"]
 }
+
 
 // User model - basic user info with referral code
 model User {
@@ -65,6 +68,7 @@ model User {
   @@index([tier])
   @@index([created_at])
   @@index([agent_verification_status])
+  @@schema("public")
   @@map("users")
 }
 
@@ -91,6 +95,7 @@ model Referral {
   @@index([referrer_id])
   @@index([referred_id])
   @@index([status])
+  @@schema("public")
   @@map("referrals")
 }
 
@@ -109,6 +114,7 @@ model ReferralReward {
 
   @@index([user_id])
   @@index([status])
+  @@schema("public")
   @@map("referral_rewards")
 }
 
@@ -137,6 +143,7 @@ model Article {
   @@index([market_id])
   @@index([category])
   @@index([featured])
+  @@schema("public")
   @@map("articles")
 }
 
@@ -172,6 +179,7 @@ model Listing {
 
   @@index([market_id])
   @@index([featured])
+  @@schema("public")
   @@map("listings")
 }
 
@@ -192,6 +200,7 @@ model UserSession {
   @@index([email])
   @@index([sign_in_time])
   @@index([is_active])
+  @@schema("public")
   @@map("user_sessions")
 }
 
@@ -219,6 +228,7 @@ model Subscription {
   @@index([user_id])
   @@index([status])
   @@index([plan_type])
+  @@schema("public")
   @@map("subscriptions")
 }
 
@@ -238,6 +248,7 @@ model Event {
   @@index([event_name])
   @@index([market])
   @@index([created_at])
+  @@schema("public")
   @@map("events")
 }
 
@@ -262,6 +273,7 @@ model CrmLead {
   @@index([status])
   @@index([market])
   @@index([next_follow_up_at])
+  @@schema("public")
   @@map("crm_leads")
 }
 
@@ -284,6 +296,7 @@ model Monetization {
   @@index([type])
   @@index([status])
   @@index([created_at])
+  @@schema("public")
   @@map("monetization")
 }
 
@@ -309,6 +322,7 @@ model CompSale {
   @@index([village])
   @@index([sold_price])
   @@index([sold_date])
+  @@schema("public")
   @@map("comp_sales")
 }
 
@@ -322,6 +336,7 @@ model MarketInsight {
   created_at  DateTime @default(now())
 
   @@index([market_id])
+  @@schema("public")
   @@map("market_insights")
 }
 
@@ -339,6 +354,7 @@ model TermsAcceptance {
 
   @@index([email])
   @@index([accepted_at])
+  @@schema("public")
   @@map("terms_acceptances")
 }
 
@@ -359,6 +375,7 @@ model AgentRequest {
 
   @@index([status])
   @@index([submitted_at])
+  @@schema("public")
   @@map("agent_requests")
 }
 
@@ -403,6 +420,7 @@ model AgentListingSubmission {
   @@index([status])
   @@index([market_id])
   @@index([submitted_at])
+  @@schema("public")
   @@map("agent_listing_submissions")
 }
 
@@ -427,6 +445,7 @@ model AgentArticleRequest {
   @@index([agent_email])
   @@index([status])
   @@index([submitted_at])
+  @@schema("public")
   @@map("agent_article_requests")
 }
 
@@ -447,6 +466,7 @@ model UserIntentInquiry {
   @@index([intent_type])
   @@index([status])
   @@index([created_at])
+  @@schema("public")
   @@map("user_intent_inquiries")
 }
 
@@ -476,6 +496,7 @@ model ArticleVesting {
   @@index([vesting_status])
   @@index([vesting_date])
   @@index([publication_date])
+  @@schema("public")
   @@map("article_vestings")
 }
 
@@ -498,6 +519,7 @@ model ListingGracePeriod {
   @@index([status])
   @@index([grace_period_end])
   @@index([subscription_canceled_at])
+  @@schema("public")
   @@map("listing_grace_periods")
 }
 
@@ -516,6 +538,7 @@ model VestingAuditLog {
   @@index([event_type])
   @@index([resource_type])
   @@index([created_at])
+  @@schema("public")
   @@map("vesting_audit_logs")
 }
 
@@ -547,6 +570,7 @@ model SupportTicket {
   @@index([priority])
   @@index([category])
   @@index([created_at])
+  @@schema("public")
   @@map("support_tickets")
 }
 
@@ -565,6 +589,7 @@ model TicketMessage {
   @@index([ticket_id])
   @@index([sender])
   @@index([created_at])
+  @@schema("public")
   @@map("ticket_messages")
 }
 
@@ -572,6 +597,7 @@ model TicketMessage {
 model TicketSequence {
   id      String @id @default("singleton")
   counter Int    @default(0)
+  @@schema("public")
 
   @@map("ticket_sequence")
 }
