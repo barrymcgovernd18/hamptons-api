@@ -418,14 +418,15 @@ export const WATERFRONT_PREMIUMS: Record<WaterfrontType, number> = {
 
 /** Oceanfront comp regions — ONLY comp within these groups */
 export const OCEANFRONT_COMP_REGIONS: Record<string, string[]> = {
-  "southampton": ["southampton", "southampton village"],
-  "southampton village": ["southampton", "southampton village"],
-  "bridgehampton": ["bridgehampton", "sagaponack", "water mill", "wainscott"],
-  "sagaponack": ["bridgehampton", "sagaponack", "water mill", "wainscott"],
-  "water mill": ["bridgehampton", "sagaponack", "water mill", "wainscott"],
-  "wainscott": ["bridgehampton", "sagaponack", "water mill", "wainscott"],
-  "east hampton": ["east hampton"],
-  "amagansett": ["amagansett", "montauk"],
+  "southampton": ["southampton", "southampton village", "water mill", "bridgehampton"],
+  "southampton village": ["southampton", "southampton village", "water mill", "bridgehampton"],
+  "bridgehampton": ["bridgehampton", "sagaponack", "water mill", "wainscott", "east hampton"],
+  "sagaponack": ["bridgehampton", "sagaponack", "water mill", "wainscott", "east hampton"],
+  "water mill": ["bridgehampton", "sagaponack", "water mill", "wainscott", "southampton"],
+  "wainscott": ["bridgehampton", "sagaponack", "water mill", "wainscott", "east hampton"],
+  "east hampton": ["east hampton", "east hampton village", "wainscott", "amagansett", "sagaponack", "bridgehampton"],
+  "east hampton village": ["east hampton", "east hampton village", "wainscott", "amagansett", "sagaponack"],
+  "amagansett": ["amagansett", "montauk", "east hampton"],
   "montauk": ["amagansett", "montauk"],
   "westhampton": ["westhampton", "westhampton beach", "quogue"],
   "westhampton beach": ["westhampton", "westhampton beach", "quogue"],

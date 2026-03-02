@@ -1012,12 +1012,31 @@ smartCompsRouter.post("/analyze", async (c) => {
       });
     }
 
+    // Deduplicate: same address + same price = duplicate entry (keep most recent)
+    const dedupeKey = (c: CompSale) => `${(c.address || "").toLowerCase().trim()}|${c.sold_price}`;
+    const dedupeMap = new Map<string, CompSale>();
+    for (const comp of allComps) {
+      const key = dedupeKey(comp);
+      const existing = dedupeMap.get(key);
+      if (!existing || (comp.sold_date && existing.sold_date && comp.sold_date > existing.sold_date)) {
+        dedupeMap.set(key, comp);
+      }
+    }
+    const dedupedComps = Array.from(dedupeMap.values());
+    if (dedupedComps.length < allComps.length) {
+      console.log(`[SmartComps v4] Deduped: ${allComps.length} → ${dedupedComps.length} comps`);
+    }
+
     // Score and rank
-    const scored = allComps
+    const scored = dedupedComps
       .map(comp => scoreComp(comp, { ...subject, classification: subjectClass }))
       .filter(comp => {
         const compat = areComparable(subjectClass, comp.classification);
-        return compat.comparable;
+        // Use areComparable as a scoring penalty, not a hard filter
+        // Only reject truly incompatible (e.g. Springs vs EH Village)
+        // For oceanfront vs non-oceanfront, let the location_tier filter handle it
+        if (!compat.comparable && compat.penalty <= -25) return false; // Hard reject (Springs vs Village etc)
+        return true;
       })
       // Condition filter: for land_needs_work, use scoring bonuses instead of hard-filter
       // Unknown condition (no sqft data) always passes — can't exclude what we can't detect
