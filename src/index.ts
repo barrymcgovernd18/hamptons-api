@@ -25,6 +25,7 @@ import { waitlistRouter } from "./routes/waitlist";
 import { webPagesRouter } from "./routes/web-pages";
 import { vestingRouter } from "./routes/vesting";
 import { supportRouter } from "./routes/support";
+import { smartCompsRouter } from "./routes/smart-comps";
 import { rateLimit } from "./middleware/rate-limit";
 import { logger } from "hono/logger";
 
@@ -202,6 +203,7 @@ app.route("/api/analytics", analyticsRouter);
 app.route("/api/admin", adminRouter);
 app.route("/api/market-data", marketDataRouter);
 app.route("/api/parcels", parcelsRouter);
+app.route("/api/smart-comps", smartCompsRouter);
 app.route("/api/legal", legalRouter);
 app.route("/api/inquiries", inquiriesRouter);
 app.route("/api/waitlist", waitlistRouter);
