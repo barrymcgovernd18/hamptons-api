@@ -528,29 +528,160 @@ export const PRICE_FILTERS: Record<string, { minRatio: number; maxRatio: number 
 // =============================================================================
 
 export const SCORING = {
+  // Location category match (25 pts)
   exact_tier_match: 25,
-  tier1_to_tier2: 15,
-  tier4_to_tier2: 12,
-  tier3_to_tier2_or_tier4: 8,
+  cross_tier_oceanfront_prime: 15,  // Oceanfront ↔ Prime SOH
+  prime_soh_to_noh: 12,
+  soh_to_noh: 8,
   different_tier: 0,
+  // Hamlet (10 pts)
   same_hamlet: 10,
+  // SOH match (8 pts) — skip for oceanfront
   soh_match: 8,
+  // Prime road (7 pts)
   prime_road_match: 7,
-  waterfront_type_match: 10,   // NEW: exact waterfront type match
-  waterfront_mismatch: -15,    // NEW: penalty for ocean vs inland etc
+  // Waterfront
+  waterfront_type_match: 10,
+  waterfront_mismatch: -15,
+  // Bedrooms (12 pts)
   bedrooms_exact: 12,
   bedrooms_diff_1: 8,
   bedrooms_diff_2: 3,
   bedrooms_diff_3plus: 0,
-  sqft_within_15pct: 13,
-  sqft_within_30pct: 7,
-  sqft_within_50pct: 3,
-  sqft_beyond_50pct: 0,
+  // Square footage (13 pts) — Vibecode bands
+  sqft_85_115: 13,
+  sqft_70_130: 7,
+  sqft_50_150: 3,
+  sqft_beyond_150: 0,
+  // Lot size (10 pts normal, 25 pts for land/teardown search)
+  lot_normal_max: 10,
+  lot_land_search_max: 25,
+  lot_large_bonus: 10,  // +10 for 2+ acres
+  // Recency (20 pts)
   recency_0_6mo: 20,
   recency_6_12mo: 15,
   recency_12_18mo: 10,
   recency_18_24mo: 5,
   recency_24plus: 2,
+  // Distance/proximity (15 pts) — needs geocoding
+  proximity_max: 15,
+  proximity_decay_per_mile: 7.5,
+  // Price tier similarity (15 pts, multi-market only)
+  price_tier_70_130: 15,
+  price_tier_50_150: 8,
+  price_tier_beyond_150: 2,
+  // Special bonuses
+  new_construction_for_soh_teardown: 20,
+  vacant_land_for_noh_teardown: 15,
+  low_value_land_on_soh_teardown_penalty: -15,
+};
+
+// =============================================================================
+// SOH LAND VALUES (Per-Acre) — for lot-based valuation
+// =============================================================================
+
+export const SOH_LAND_VALUES = {
+  oceanfront_waterfront: 20_000_000,
+  prime_soh_waterfront: {
+    bayfront: 9_000_000,
+    pondfront: 7_800_000,
+  },
+  sag_harbor_waterfront: {
+    bayfront: 6_000_000,
+    pondfront: 5_200_000,
+  },
+  prime_soh_no_waterfront: {
+    sagaponack: 9_000_000,
+    "east hampton": 8_000_000,
+    southampton: 7_000_000,
+    bridgehampton: 6_500_000,
+    default: 6_000_000,
+  } as Record<string, number>,
+  standard_soh_no_waterfront: {
+    sagaponack: 8_000_000,
+    "east hampton": 7_500_000,
+    southampton: 6_000_000,
+    bridgehampton: 5_500_000,
+    "water mill": 5_000_000,
+    wainscott: 5_000_000,
+    default: 5_000_000,
+  } as Record<string, number>,
+  shelter_island: {
+    waterfront: 3_500_000,
+    non_waterfront: 2_250_000,
+  },
+};
+
+// =============================================================================
+// CONDITION MULTIPLIERS
+// =============================================================================
+
+export const CONDITION_MULTIPLIERS = {
+  renovated: {
+    standard: 1.08,
+    high_end: 1.12,
+    ultra_luxury: 1.20,
+  },
+  new_construction_for_teardown: {
+    standard: 1.20,
+    high_end: 1.35,
+    ultra_luxury: 1.50,
+  },
+  existing_home: 1.0,
+};
+
+// =============================================================================
+// VALUATION BLEND WEIGHTS
+// =============================================================================
+
+export const VALUATION_BLEND = {
+  // Both PSF and lot available
+  both: { psf: 0.55, baseline: 0.30, lot: 0.15 },
+  // PSF only
+  psf_only: { psf: 0.65, baseline: 0.35 },
+  // Lot only
+  lot_only: { lot: 0.50, baseline: 0.50 },
+  // Baseline only (fallback)
+  baseline_only: { baseline: 1.00 },
+  // Value range multipliers
+  range_low: 0.825,   // avg of 0.80-0.85
+  range_high: 1.175,  // avg of 1.15-1.20
+};
+
+// =============================================================================
+// FALLBACK ESTIMATES (Zero Comps)
+// =============================================================================
+
+export const FALLBACK_ESTIMATES: Record<string, Record<string, number>> = {
+  hamptons: {
+    "east hampton": 8_000_000,
+    southampton: 7_500_000,
+    bridgehampton: 6_500_000,
+    sagaponack: 9_000_000,
+    "water mill": 5_500_000,
+    wainscott: 5_000_000,
+    amagansett: 5_000_000,
+    "sag harbor": 4_000_000,
+    montauk: 3_500_000,
+    "shelter island": 2_500_000,
+  },
+  palm_beach: {
+    "palm beach": 5_250_000,
+    manalapan: 8_000_000,
+    "jupiter island": 6_000_000,
+    "gulf stream": 4_500_000,
+  },
+  miami: {
+    "star island": 45_000_000,
+    "fisher island": 18_000_000,
+    "indian creek": 30_000_000,
+    "miami beach": 800_000,
+  },
+  aspen: {
+    "red mountain": 25_000_000,
+    starwood: 18_000_000,
+    "aspen core": 5_200_000,
+  },
 };
 
 // =============================================================================

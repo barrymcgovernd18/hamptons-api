@@ -25,6 +25,10 @@ import {
   TIME_ADJUSTMENTS,
   PRICE_FILTERS,
   SCORING,
+  SOH_LAND_VALUES,
+  CONDITION_MULTIPLIERS,
+  VALUATION_BLEND,
+  FALLBACK_ESTIMATES,
   type MarketTier,
   type WaterfrontType,
 } from "../data/hamptons-market-data.js";
@@ -165,49 +169,89 @@ function detectFlips(comps: CompSale[]): Map<string, FlipDetection> {
 // =============================================================================
 
 /**
- * Calculate NOH land value with diminishing returns.
- * 1st acre: 100% of base, 2nd acre: 70%, additional: 50%
- * Returns estimated land value.
+ * Calculate land value for any property (SOH or NOH).
+ * SOH uses fixed per-acre values from Barry's training data.
+ * NOH uses diminishing returns (1st: 100%, 2nd: 70%, additional: 50%).
  */
-function calculateNohLandValue(
-  lotAcres: number,
-  village: string,
-  locationType: string
-): number {
-  const vill = normalize(village);
-  
-  // Base per-acre values for NOH
+function calculateLandValue(
+  comp: CompSale,
+  classification: LocationClassification
+): number | null {
+  if (!comp.lot_acres) return null;
+  const vill = normalize(comp.village || "");
+  const lotAcres = comp.lot_acres;
+
+  // SOH Land Values
+  if (classification.isSouthOfHighway) {
+    // Oceanfront waterfront: $20M/acre
+    if (classification.locationType === "tier1_oceanfront") {
+      return Math.round(lotAcres * SOH_LAND_VALUES.oceanfront_waterfront);
+    }
+    // SOH Waterfront (non-ocean)
+    if (classification.hasWaterfront && classification.waterfrontType !== "ocean") {
+      const isSagHarbor = vill.includes("sag harbor");
+      if (isSagHarbor) {
+        const rate = classification.waterfrontType === "bay"
+          ? SOH_LAND_VALUES.sag_harbor_waterfront.bayfront
+          : SOH_LAND_VALUES.sag_harbor_waterfront.pondfront;
+        return Math.round(lotAcres * rate);
+      }
+      const rate = classification.waterfrontType === "bay"
+        ? SOH_LAND_VALUES.prime_soh_waterfront.bayfront
+        : SOH_LAND_VALUES.prime_soh_waterfront.pondfront;
+      return Math.round(lotAcres * rate);
+    }
+    // Prime SOH (no waterfront)
+    if (classification.locationType === "tier2_prime_soh") {
+      const rate = SOH_LAND_VALUES.prime_soh_no_waterfront[vill]
+        || SOH_LAND_VALUES.prime_soh_no_waterfront["default"];
+      return Math.round(lotAcres * rate);
+    }
+    // Standard SOH
+    const rate = SOH_LAND_VALUES.standard_soh_no_waterfront[vill]
+      || SOH_LAND_VALUES.standard_soh_no_waterfront["default"];
+    return Math.round(lotAcres * rate);
+  }
+
+  // Shelter Island
+  if (vill.includes("shelter island")) {
+    const rate = classification.hasWaterfront
+      ? SOH_LAND_VALUES.shelter_island.waterfront
+      : SOH_LAND_VALUES.shelter_island.non_waterfront;
+    return Math.round(lotAcres * rate);
+  }
+
+  // NOH with diminishing returns
   let basePerAcre: number;
+  const locType = classification.locationType;
   const isVillageHamlet = ["sag harbor", "east hampton village", "southampton village", "bridgehampton"].includes(vill);
   
-  if (locationType === "springs") basePerAcre = 1_100_000;
-  else if (locationType === "northwest_woods") basePerAcre = 2_600_000;
+  if (locType === "springs") basePerAcre = 1_100_000;
+  else if (locType === "northwest_woods") basePerAcre = 2_600_000;
   else if (isVillageHamlet) basePerAcre = 3_400_000;
   else basePerAcre = 3_000_000;
 
   // Diminishing returns
   if (lotAcres <= 1) {
-    return Math.max(lotAcres * basePerAcre, locationType === "springs" ? 700_000 : 800_000);
+    const value = lotAcres * basePerAcre;
+    // Springs special: 0.4 acre minimum $900K, up to $1.2M at 1 acre
+    if (locType === "springs") {
+      if (lotAcres <= 0.4) return Math.max(Math.round(value), 900_000);
+      return Math.max(Math.round(value), 1_200_000);
+    }
+    return Math.max(Math.round(value), locType === "springs" ? 700_000 : 800_000);
   }
 
-  let value = basePerAcre; // First acre at 100%
+  let totalValue = basePerAcre; // First acre at 100%
   if (lotAcres > 1) {
     const secondAcre = Math.min(lotAcres - 1, 1);
-    value += secondAcre * basePerAcre * 0.70; // Second acre at 70%
+    totalValue += secondAcre * basePerAcre * 0.70; // Second acre at 70%
   }
   if (lotAcres > 2) {
-    value += (lotAcres - 2) * basePerAcre * 0.50; // Additional at 50%
+    totalValue += (lotAcres - 2) * basePerAcre * 0.50; // Additional at 50%
   }
 
-  // Minimums
-  if (locationType === "springs") {
-    if (lotAcres <= 0.4) return Math.max(value, 900_000);
-    if (lotAcres <= 1.0) return Math.max(value, 1_200_000);
-  } else {
-    if (lotAcres <= 0.25 && isVillageHamlet) return Math.max(value, 1_200_000);
-  }
-
-  return Math.round(value);
+  return Math.round(totalValue);
 }
 
 // =============================================================================
@@ -271,7 +315,7 @@ interface ScoredComp extends CompSale {
   price_difference_pct: number;
   days_ago: number;
   condition: PropertyCondition;
-  noh_land_value: number | null;
+  land_value: number | null;
   flip_info: FlipDetection | null;
 }
 
@@ -295,11 +339,12 @@ function scoreComp(
     lot_acres?: number;
     address?: string;
     classification: LocationClassification;
+    condition?: string | null;
   }
 ): ScoredComp {
   const scores: Record<string, number> = {
+    location_category: 0,
     hamlet_match: 0,
-    tier_match: 0,
     price_proximity: 0,
     beds_match: 0,
     sqft_match: 0,
@@ -307,38 +352,61 @@ function scoreComp(
     recency: 0,
     soh_match: 0,
     waterfront_match: 0,
-    street_premium_match: 0,
-    comparability_adjustment: 0,
+    prime_road_match: 0,
+    special_bonus: 0,
   };
 
   const subjectVillage = normalize(subject.village);
   const compVillage = normalize(comp.village || "");
   const compClass = classifyAddress(comp.address || "", comp.village || "");
-  const compat = areComparable(subject.classification, compClass);
-  scores.comparability_adjustment = compat.penalty;
+  const isLandSearch = subject.condition === "land_needs_work";
+  const isOceanfront = subject.classification.locationType === "tier1_oceanfront";
+
+  // Condition detection for comp
+  const ppsf = comp.sqft && comp.sqft > 0 ? comp.sold_price / comp.sqft : null;
+  const condition = detectCondition(ppsf ? Math.round(ppsf) : null, comp.village || "");
+
+  // --- Location Category Match (25 pts) ---
+  // Vibecode: Exact: 25, Cross-tier ocean/prime: 15, Prime→NOH: 12, SOH→NOH: 8, Different: 0
+  const subLoc = subject.classification.locationType;
+  const compLoc = compClass.locationType;
+  if (subLoc === compLoc) {
+    scores.location_category = SCORING.exact_tier_match;
+  } else if (
+    (subLoc === "tier1_oceanfront" && compLoc === "tier2_prime_soh") ||
+    (subLoc === "tier2_prime_soh" && compLoc === "tier1_oceanfront")
+  ) {
+    scores.location_category = SCORING.cross_tier_oceanfront_prime;
+  } else if (
+    (subLoc === "tier2_prime_soh" && (compLoc === "noh_standard" || compLoc === "tier4_noh_waterfront")) ||
+    ((subLoc === "noh_standard" || subLoc === "tier4_noh_waterfront") && compLoc === "tier2_prime_soh")
+  ) {
+    scores.location_category = SCORING.prime_soh_to_noh;
+  } else if (
+    (subject.classification.isSouthOfHighway && !compClass.isSouthOfHighway) ||
+    (!subject.classification.isSouthOfHighway && compClass.isSouthOfHighway)
+  ) {
+    scores.location_category = SCORING.soh_to_noh;
+  } else {
+    // Same side but different sub-tier
+    scores.location_category = 15;
+  }
 
   // --- Hamlet match (10 pts) ---
   if (compVillage === subjectVillage) {
     scores.hamlet_match = SCORING.same_hamlet;
   } else {
-    const regions = subject.classification.locationType === "tier1_oceanfront"
+    const regions = isOceanfront
       ? (OCEANFRONT_COMP_REGIONS[subjectVillage] || [])
       : (COMP_REGIONS[subjectVillage] || []);
     if (regions.includes(compVillage)) scores.hamlet_match = 6;
   }
 
-  // --- Tier match (25 pts) ---
-  const subjectTier = getMarketTier(subject.village);
-  const compTier = getMarketTier(comp.village || "");
-  const tierDiff = Math.abs(TIER_RANK[subjectTier] - TIER_RANK[compTier]);
-  if (tierDiff === 0) scores.tier_match = SCORING.exact_tier_match;
-  else if (tierDiff === 1) scores.tier_match = SCORING.tier1_to_tier2;
-  else if (tierDiff === 2) scores.tier_match = SCORING.tier3_to_tier2_or_tier4;
-  else scores.tier_match = SCORING.different_tier;
-
-  // --- SOH match (8 pts) ---
-  if (subject.classification.isSouthOfHighway === compClass.isSouthOfHighway) {
-    scores.soh_match = SCORING.soh_match;
+  // --- SOH match (8 pts) — skip for oceanfront per Vibecode ---
+  if (!isOceanfront) {
+    if (subject.classification.isSouthOfHighway === compClass.isSouthOfHighway) {
+      scores.soh_match = SCORING.soh_match;
+    }
   }
 
   // --- Waterfront match (10 / -15 pts) ---
@@ -356,15 +424,20 @@ function scoreComp(
   const timeAdj = getTimeAdjustment(comp.sold_date);
   const adjustedPrice = Math.round(comp.sold_price * timeAdj);
 
-  // --- Price proximity (30 pts) — only when subject has a price ---
+  // --- Price proximity (30 pts) — Vibecode formula ---
   if (subject.price) {
-    const priceDiff = Math.abs(adjustedPrice - subject.price) / subject.price;
-    if (priceDiff <= 0.10) scores.price_proximity = 30;
-    else if (priceDiff <= 0.20) scores.price_proximity = 25;
-    else if (priceDiff <= 0.30) scores.price_proximity = 20;
-    else if (priceDiff <= 0.40) scores.price_proximity = 12;
-    else if (priceDiff <= 0.50) scores.price_proximity = 5;
-    else scores.price_proximity = 0;
+    const ratio = adjustedPrice / subject.price;
+    const diff = Math.abs(1 - ratio);
+    if (diff <= 0.20) {
+      // Within 20%: proximity = 1 - diff * 2.5 (max 30 pts)
+      scores.price_proximity = Math.round(Math.min(30, (1 - diff * 2.5) * 30));
+    } else if (diff <= 0.50) {
+      // Within 50%: scaled by 0.5 (max 15 pts)
+      scores.price_proximity = Math.round(Math.max(5, 15 * (1 - (diff - 0.2) / 0.3)));
+    } else {
+      scores.price_proximity = Math.min(5, Math.round(5 * (1 - (diff - 0.5))));
+    }
+    scores.price_proximity = Math.max(0, scores.price_proximity);
   }
 
   // --- Beds match (12 pts) ---
@@ -378,26 +451,31 @@ function scoreComp(
     scores.beds_match = 4;
   }
 
-  // --- Sqft match (13 pts) ---
+  // --- Sqft match (13 pts) — Vibecode bands: 85-115%, 70-130%, 50-150% ---
   if (subject.sqft && comp.sqft) {
-    const sqftDiff = Math.abs(comp.sqft - subject.sqft) / subject.sqft;
-    if (sqftDiff <= 0.15) scores.sqft_match = SCORING.sqft_within_15pct;
-    else if (sqftDiff <= 0.30) scores.sqft_match = SCORING.sqft_within_30pct;
-    else if (sqftDiff <= 0.50) scores.sqft_match = SCORING.sqft_within_50pct;
-    else scores.sqft_match = SCORING.sqft_beyond_50pct;
+    const sqftRatio = comp.sqft / subject.sqft;
+    if (sqftRatio >= 0.85 && sqftRatio <= 1.15) scores.sqft_match = SCORING.sqft_85_115;
+    else if (sqftRatio >= 0.70 && sqftRatio <= 1.30) scores.sqft_match = SCORING.sqft_70_130;
+    else if (sqftRatio >= 0.50 && sqftRatio <= 1.50) scores.sqft_match = SCORING.sqft_50_150;
+    else scores.sqft_match = SCORING.sqft_beyond_150;
   } else {
     scores.sqft_match = 4;
   }
 
-  // --- Lot size match (10 pts) — important for valuation mode ---
+  // --- Lot size match (10 pts normal, 25 pts for land search) ---
+  const lotMax = isLandSearch ? SCORING.lot_land_search_max : SCORING.lot_normal_max;
   if (subject.lot_acres && comp.lot_acres) {
-    const lotDiff = Math.abs(comp.lot_acres - subject.lot_acres) / subject.lot_acres;
-    if (lotDiff <= 0.25) scores.lot_match = 10;
-    else if (lotDiff <= 0.50) scores.lot_match = 6;
-    else if (lotDiff <= 0.75) scores.lot_match = 3;
+    const lotRatio = comp.lot_acres / subject.lot_acres;
+    if (lotRatio >= 0.70 && lotRatio <= 1.30) scores.lot_match = lotMax;
+    else if (lotRatio >= 0.50 && lotRatio <= 1.50) scores.lot_match = Math.round(lotMax * 0.5);
+    else if (lotRatio >= 0.33 && lotRatio <= 2.00) scores.lot_match = Math.round(lotMax * 0.2);
     else scores.lot_match = 0;
+    // Large lot bonus (2+ acres)
+    if (comp.lot_acres >= 2 && subject.lot_acres >= 2) {
+      scores.lot_match += SCORING.lot_large_bonus;
+    }
   } else {
-    scores.lot_match = 3;
+    scores.lot_match = isLandSearch ? 0 : 3;
   }
 
   // --- Recency (20 pts) ---
@@ -408,20 +486,31 @@ function scoreComp(
   else if (daysAgo <= 730) scores.recency = SCORING.recency_18_24mo;
   else scores.recency = SCORING.recency_24plus;
 
-  // --- Street premium match (7 pts) ---
+  // --- Prime road match (7 pts) ---
   if (subject.classification.isPrimeRoad && compClass.isPrimeRoad) {
-    scores.street_premium_match = SCORING.prime_road_match;
+    scores.prime_road_match = SCORING.prime_road_match;
   } else if (!subject.classification.isPrimeRoad && !compClass.isPrimeRoad) {
-    scores.street_premium_match = 5;
-  } else {
-    scores.street_premium_match = 0;
+    scores.prime_road_match = 5;
   }
 
-  // --- NOH acreage diminishing returns adjustment ---
-  // If comp is NOH with large lot, the per-acre value drops
-  // Boost comps with similar lot sizes in NOH
+  // --- Special bonuses for condition-specific searches ---
+  if (isLandSearch) {
+    // SOH teardown: prefer new construction comps
+    if (subject.classification.isSouthOfHighway && condition === "new_construction") {
+      scores.special_bonus += SCORING.new_construction_for_soh_teardown;
+    }
+    // NOH teardown: prefer vacant land comps
+    if (!subject.classification.isSouthOfHighway && condition === "land_needs_work") {
+      scores.special_bonus += SCORING.vacant_land_for_noh_teardown;
+    }
+    // Penalty: low-value land comp on SOH teardown search
+    if (subject.classification.isSouthOfHighway && condition === "land_needs_work" && !compClass.isSouthOfHighway) {
+      scores.special_bonus += SCORING.low_value_land_on_soh_teardown_penalty;
+    }
+  }
+
+  // --- NOH diminishing returns lot adjustment ---
   if (!compClass.isSouthOfHighway && comp.lot_acres && subject.lot_acres) {
-    // Both NOH: if lot sizes are very different, penalize slightly
     const lotRatio = comp.lot_acres / subject.lot_acres;
     if (lotRatio > 3.0 || lotRatio < 0.33) {
       scores.lot_match = Math.max(0, scores.lot_match - 3);
@@ -430,14 +519,8 @@ function scoreComp(
 
   const totalScore = Object.values(scores).reduce((a, b) => a + b, 0);
 
-  // Condition detection
-  const ppsf = comp.sqft && comp.sqft > 0 ? comp.sold_price / comp.sqft : null;
-  const condition = detectCondition(ppsf ? Math.round(ppsf) : null, comp.village || "");
-
-  // NOH land value estimate
-  const nohLandValue = !compClass.isSouthOfHighway && comp.lot_acres
-    ? calculateNohLandValue(comp.lot_acres, comp.village || "", compClass.locationType)
-    : null;
+  // Land value estimate (SOH or NOH)
+  const landValue = calculateLandValue(comp, compClass);
 
   return {
     ...comp,
@@ -451,7 +534,7 @@ function scoreComp(
       : 0,
     days_ago: daysAgo,
     condition,
-    noh_land_value: nohLandValue,
+    land_value: landValue,
     flip_info: null, // Populated later in batch
   };
 }
@@ -484,109 +567,138 @@ function estimateValue(
   }
 ): ValuationResult {
   if (comps.length === 0) {
+    // Fallback estimate from hamlet base values
+    const vill = normalize(subject.village);
+    const fallback = FALLBACK_ESTIMATES.hamptons[vill] || HAMLET_BASE_VALUES[vill] || 0;
     return {
-      estimated_value: 0,
+      estimated_value: fallback,
       confidence: "low",
-      value_range: { low: 0, high: 0 },
-      methodology: "insufficient_data",
-      factors: ["No comparable sales found"],
+      value_range: { low: Math.round(fallback * 0.80), high: Math.round(fallback * 1.20) },
+      methodology: fallback ? "hamlet_fallback" : "insufficient_data",
+      factors: fallback
+        ? [`No comparable sales found`, `Using hamlet baseline: $${fallback.toLocaleString()}`]
+        : ["No comparable sales found"],
     };
   }
 
-  // Weight each comp by relevance score and recency
-  const weighted: Array<{ price: number; weight: number }> = comps.map(c => {
+  const streetPremium = subject.classification.streetPremium;
+
+  // -----------------------------------------------------------------------
+  // Priority 2: Price Per Sqft estimate
+  // -----------------------------------------------------------------------
+  let psfEstimate: number | null = null;
+  if (subject.sqft) {
+    const compsWithPsf = comps.filter(c => c.price_per_sqft && c.price_per_sqft > 0);
+    if (compsWithPsf.length >= 3) {
+      // Weighted avg PSF by relevance score
+      const totalWeight = compsWithPsf.reduce((s, c) => s + c.relevance_score, 0);
+      const weightedPsf = compsWithPsf.reduce((s, c) =>
+        s + (c.price_per_sqft! * c.relevance_score), 0) / totalWeight;
+      psfEstimate = Math.round(weightedPsf * subject.sqft * streetPremium);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Priority 3: Lot-based valuation
+  // -----------------------------------------------------------------------
+  let lotEstimate: number | null = null;
+  if (subject.lot_acres) {
+    // Create a dummy comp to use the land value calculator
+    const dummyComp = { lot_acres: subject.lot_acres, village: subject.village } as CompSale;
+    const landVal = calculateLandValue(dummyComp, subject.classification);
+    if (landVal) lotEstimate = landVal;
+  }
+
+  // -----------------------------------------------------------------------
+  // Priority 4: Comp baseline (weighted average by match score)
+  // -----------------------------------------------------------------------
+  const weighted = comps.map(c => {
     let weight = c.relevance_score;
-    // Boost recent sales
     if (c.days_ago <= 180) weight *= 1.5;
     else if (c.days_ago <= 365) weight *= 1.2;
-    // Boost exact lot size matches
     if (subject.lot_acres && c.lot_acres) {
       const lotRatio = Math.abs(c.lot_acres - subject.lot_acres) / subject.lot_acres;
       if (lotRatio <= 0.25) weight *= 1.3;
     }
-    // Boost exact bed matches
     if (subject.beds && c.beds && c.beds === subject.beds) weight *= 1.2;
     return { price: c.adjusted_price, weight };
   });
-
-  // Sort by price for percentile calculation
-  weighted.sort((a, b) => a.price - b.price);
-
-  // Weighted average
   const totalWeight = weighted.reduce((s, w) => s + w.weight, 0);
-  const weightedAvg = Math.round(
+  const baselineEstimate = Math.round(
     weighted.reduce((s, w) => s + w.price * w.weight, 0) / totalWeight
   );
 
-  // Weighted median (find the price at 50% of cumulative weight)
-  let cumWeight = 0;
-  let weightedMedian = weighted[0].price;
-  for (const w of weighted) {
-    cumWeight += w.weight;
-    if (cumWeight >= totalWeight / 2) {
-      weightedMedian = w.price;
-      break;
-    }
+  // -----------------------------------------------------------------------
+  // Blend formula (Vibecode methodology)
+  // -----------------------------------------------------------------------
+  let rawEstimate: number;
+  let methodology: string;
+
+  if (psfEstimate && lotEstimate) {
+    // Both PSF and lot: 55% PSF + 30% baseline + 15% lot
+    rawEstimate = Math.round(
+      psfEstimate * VALUATION_BLEND.both.psf +
+      baselineEstimate * VALUATION_BLEND.both.baseline +
+      lotEstimate * VALUATION_BLEND.both.lot
+    );
+    methodology = "psf_lot_baseline_blend";
+  } else if (psfEstimate) {
+    // PSF only: 65% PSF + 35% baseline
+    rawEstimate = Math.round(
+      psfEstimate * VALUATION_BLEND.psf_only.psf +
+      baselineEstimate * VALUATION_BLEND.psf_only.baseline
+    );
+    methodology = "psf_baseline_blend";
+  } else if (lotEstimate) {
+    // Lot only: 50% lot + 50% baseline
+    rawEstimate = Math.round(
+      lotEstimate * VALUATION_BLEND.lot_only.lot +
+      baselineEstimate * VALUATION_BLEND.lot_only.baseline
+    );
+    methodology = "lot_baseline_blend";
+  } else {
+    // Baseline only
+    rawEstimate = baselineEstimate;
+    methodology = "baseline_only";
   }
 
-  // Apply street premium adjustment
-  const streetPremium = subject.classification.streetPremium;
-  // If subject is on a premium street but most comps aren't, adjust up
+  // Apply street premium if comps don't already reflect it
   const compsAvgPremium = comps.reduce((s, c) => s + c.classification.streetPremium, 0) / comps.length;
-  const premiumAdjustment = streetPremium > 1.0 && compsAvgPremium < streetPremium
-    ? streetPremium / compsAvgPremium
-    : 1.0;
-
-  // Final estimate: blend of weighted median and weighted average
-  let rawEstimate = Math.round((weightedMedian * 0.6 + weightedAvg * 0.4) * premiumAdjustment);
+  if (streetPremium > 1.0 && compsAvgPremium < streetPremium) {
+    rawEstimate = Math.round(rawEstimate * (streetPremium / compsAvgPremium));
+  }
 
   // Round to nearest $25K
   const estimated = Math.round(rawEstimate / 25000) * 25000;
 
-  // Confidence based on comp count and score
+  // Confidence
   const avgScore = comps.reduce((s, c) => s + c.relevance_score, 0) / comps.length;
   let confidence: "high" | "medium" | "low";
   if (comps.length >= 8 && avgScore >= 60) confidence = "high";
   else if (comps.length >= 5 && avgScore >= 40) confidence = "medium";
   else confidence = "low";
 
-  // Value range (10th and 90th percentile of adjusted comps)
-  const prices = comps.map(c => c.adjusted_price).sort((a, b) => a - b);
-  const p10 = prices[Math.floor(prices.length * 0.1)] || prices[0];
-  const p90 = prices[Math.ceil(prices.length * 0.9) - 1] || prices[prices.length - 1];
+  // Value range (Vibecode: 0.80-0.85x low, 1.15-1.20x high)
+  const rangeLow = Math.round(estimated * VALUATION_BLEND.range_low / 25000) * 25000;
+  const rangeHigh = Math.round(estimated * VALUATION_BLEND.range_high / 25000) * 25000;
 
-  // NOH diminishing returns adjustment
-  if (!subject.classification.isSouthOfHighway && subject.lot_acres && subject.lot_acres > 2) {
-    const nohLandVal = calculateNohLandValue(subject.lot_acres, subject.village, subject.classification.locationType);
-    // If comps have smaller lots, the per-acre value is higher than what this large lot would get
-    const compsAvgLot = comps.filter(c => c.lot_acres).reduce((s, c) => s + (c.lot_acres || 0), 0) /
-      comps.filter(c => c.lot_acres).length || 1;
-    if (subject.lot_acres > compsAvgLot * 1.5) {
-      // Subject has much larger lot than comps — diminishing returns apply
-      // Reduce estimate slightly (large NOH lots don't scale linearly)
-      const dimFactor = 0.95; // 5% reduction for significantly larger lots
-      rawEstimate = Math.round(rawEstimate * dimFactor);
-    }
-  }
-
-  // Build factors explanation
+  // Build factors
   const factors: string[] = [];
   factors.push(`Based on ${comps.length} comparable sales`);
+  factors.push(`Methodology: ${methodology.replace(/_/g, " ")}`);
+  if (psfEstimate) factors.push(`PSF estimate: $${psfEstimate.toLocaleString()}`);
+  if (lotEstimate) factors.push(`Lot-based estimate: $${lotEstimate.toLocaleString()}`);
+  factors.push(`Comp baseline: $${baselineEstimate.toLocaleString()}`);
   if (subject.classification.isSouthOfHighway) factors.push("South of Highway location");
   else factors.push("North of Highway location");
   if (subject.classification.hasWaterfront) factors.push(`${subject.classification.waterfrontType} waterfront`);
   if (streetPremium > 1.0) factors.push(`Premium road (${streetPremium}x multiplier)`);
   if (subject.beds) factors.push(`${subject.beds} bedrooms`);
-  if (subject.lot_acres) {
-    factors.push(`${subject.lot_acres} acres`);
-    if (!subject.classification.isSouthOfHighway && subject.lot_acres > 2) {
-      factors.push("NOH diminishing returns applied for large lot");
-    }
-  }
+  if (subject.sqft) factors.push(`${subject.sqft.toLocaleString()} sqft`);
+  if (subject.lot_acres) factors.push(`${subject.lot_acres} acres`);
   const recentComps = comps.filter(c => c.days_ago <= 365).length;
   factors.push(`${recentComps} sales within last 12 months`);
   
-  // Condition distribution
   const conditions = comps.reduce((acc, c) => { acc[c.condition] = (acc[c.condition] || 0) + 1; return acc; }, {} as Record<string, number>);
   const conditionStr = Object.entries(conditions).filter(([k]) => k !== "unknown").map(([k, v]) => `${v} ${k}`).join(", ");
   if (conditionStr) factors.push(`Conditions: ${conditionStr}`);
@@ -594,11 +706,8 @@ function estimateValue(
   return {
     estimated_value: estimated,
     confidence,
-    value_range: {
-      low: Math.round(p10 / 25000) * 25000,
-      high: Math.round(p90 / 25000) * 25000,
-    },
-    methodology: "weighted_comp_analysis",
+    value_range: { low: rangeLow, high: rangeHigh },
+    methodology,
     factors,
   };
 }
@@ -946,8 +1055,11 @@ smartCompsRouter.post("/analyze", async (c) => {
       valuation,
       strategy_used: strategyUsed,
       // Subject NOH land value if applicable
-      subject_noh_land_value: !subjectClass.isSouthOfHighway && subject.lot_acres
-        ? calculateNohLandValue(subject.lot_acres, subject.village, subjectClass.locationType)
+      subject_land_value: subject.lot_acres
+        ? calculateLandValue(
+            { lot_acres: subject.lot_acres, village: subject.village } as CompSale,
+            subjectClass
+          )
         : null,
       construction_costs: getConstructionCost(subject.village),
       flips_detected: scored.filter(c => c.flip_info?.is_flip).length,
@@ -972,7 +1084,7 @@ smartCompsRouter.post("/analyze", async (c) => {
         micro_market: comp.micro_market,
         source: comp.source,
         condition: comp.condition,
-        noh_land_value: comp.noh_land_value,
+        land_value: comp.land_value,
         flip_info: comp.flip_info,
       })),
       stats,
