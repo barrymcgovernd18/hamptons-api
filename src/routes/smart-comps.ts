@@ -597,3 +597,4 @@ smartCompsRouter.get("/market-data", (c) => {
 });
 
 export { smartCompsRouter };
+
