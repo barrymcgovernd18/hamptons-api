@@ -821,6 +821,7 @@ function normalizeLocationTier(val?: string): string | null {
     "soh_waterfront": "bayfront",
     "noh_waterfront": "north_of_highway",
     "village_hamlet": "village",
+    "noh_village": "village",
     // Multi-market tiers
     "trophy": "oceanfront",
     "prime": "south_of_highway",
@@ -892,7 +893,7 @@ smartCompsRouter.post("/analyze", async (c) => {
           subjectClass.waterfrontType = "none";
           break;
         case "village":
-          subjectClass.locationType = "village_hamlet";
+          subjectClass.locationType = "noh_village";
           break;
       }
     }
@@ -1042,7 +1043,7 @@ smartCompsRouter.post("/analyze", async (c) => {
           case "north_of_highway":
             return !cc.isSouthOfHighway;
           case "village":
-            return cc.locationType === "village_hamlet" || cc.locationType === "eh_village_fringe";
+            return cc.locationType === "village_hamlet" || cc.locationType === "eh_village_fringe" || cc.locationType === "noh_village";
           default:
             return true;
         }
@@ -1146,9 +1147,14 @@ smartCompsRouter.post("/analyze", async (c) => {
  */
 smartCompsRouter.get("/villages", async (c) => {
   try {
-    const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=village&limit=10000`;
+    const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=village`;
     const res = await fetch(url, {
-      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Range": "0-9999",
+        "Prefer": "count=exact",
+      },
     });
     if (!res.ok) return c.json({ success: false, error: "Failed to fetch" }, 500);
     const data = await res.json() as Array<{ village: string }>;
@@ -1178,9 +1184,14 @@ smartCompsRouter.get("/classify", (c) => {
  */
 smartCompsRouter.get("/micro-markets", async (c) => {
   try {
-    const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=micro_market&limit=10000`;
+    const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=micro_market`;
     const res = await fetch(url, {
-      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Range": "0-9999",  // Override Supabase default 1000 limit
+        "Prefer": "count=exact",
+      },
     });
     if (!res.ok) return c.json({ success: false, error: "Failed to fetch" }, 500);
     const data = await res.json() as Array<{ micro_market: string }>;
