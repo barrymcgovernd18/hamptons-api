@@ -332,4 +332,81 @@ mlsImportRouter.post("/parse-url", async (c) => {
   }
 });
 
+/**
+ * POST /parse-html
+ * Accepts raw HTML from the mobile app's WebView.
+ * This bypasses bot protection since the fetch happens on the user's phone.
+ */
+mlsImportRouter.post("/parse-html", async (c) => {
+  try {
+    const body = await c.req.json();
+    const html = body.html?.trim();
+    const sourceUrl = body.sourceUrl?.trim() || "unknown";
+
+    if (!html) {
+      return c.json({ success: false, error: "HTML content is required" }, 400);
+    }
+
+    if (html.length < 500) {
+      return c.json({
+        success: false,
+        error: "HTML content is too short. The page may not have loaded fully.",
+      }, 422);
+    }
+
+    console.log(`[MLS Import] Parsing HTML from WebView (${html.length} chars, source: ${sourceUrl})`);
+
+    // Extract images from HTML
+    const imageUrls = extractImageUrls(html, sourceUrl);
+
+    // Parse with Grok
+    let parsed: MLSParseResult;
+    try {
+      parsed = await parseWithGrok(html, sourceUrl);
+    } catch (parseErr: any) {
+      console.error(`[MLS Import HTML] Parse failed: ${parseErr.message}`);
+      return c.json({
+        success: false,
+        error: "Could not extract listing data from the page content.",
+      }, 422);
+    }
+
+    // Merge images
+    const allImages = [...new Set([...(parsed.imageUrls || []), ...imageUrls])].slice(0, 25);
+    parsed.imageUrls = allImages;
+
+    console.log(`[MLS Import HTML] Success: ${parsed.address || "unknown"}, ${allImages.length} images`);
+
+    return c.json({
+      success: true,
+      data: {
+        address: parsed.address || null,
+        village: parsed.village || null,
+        state: parsed.state || null,
+        zipCode: parsed.zipCode || null,
+        price: parsed.price || null,
+        beds: parsed.beds || null,
+        baths: parsed.baths || null,
+        sqft: parsed.sqft || null,
+        acres: parsed.acres || null,
+        yearBuilt: parsed.yearBuilt || null,
+        propertyType: parsed.propertyType || null,
+        description: parsed.description || null,
+        brokerName: parsed.brokerName || null,
+        brokerCompany: parsed.brokerCompany || null,
+        brokerPhone: parsed.brokerPhone || null,
+        brokerEmail: parsed.brokerEmail || null,
+        imageUrls: allImages,
+        mlsNumber: parsed.mlsNumber || null,
+      },
+    });
+  } catch (error: any) {
+    console.error("[MLS Import HTML] Unexpected error:", error?.message || error);
+    return c.json({
+      success: false,
+      error: "An unexpected error occurred. Please try again.",
+    }, 500);
+  }
+});
+
 export { mlsImportRouter };
