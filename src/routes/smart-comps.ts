@@ -67,6 +67,149 @@ function getPriceFilter(price: number) {
 }
 
 // =============================================================================
+// CONDITION DETECTION (from price/sqft ratio vs market avg)
+// =============================================================================
+
+type PropertyCondition = "teardown" | "needs_renovation" | "normal" | "new_construction" | "unknown";
+
+function detectCondition(pricePerSqft: number | null, village: string): PropertyCondition {
+  if (!pricePerSqft) return "unknown";
+  const vill = normalize(village);
+  // Average price/sqft by area type
+  const isSpring = vill === "springs";
+  const avgPpsf = isSpring ? 500 : 1000; // $500/sqft Springs, $1000/sqft standard Hamptons
+
+  const ratio = pricePerSqft / avgPpsf;
+  if (ratio < 0.40) return "teardown";
+  if (ratio < 0.65) return "needs_renovation";
+  if (ratio > 1.50) return "new_construction";
+  return "normal";
+}
+
+// =============================================================================
+// CONSTRUCTION COST ESTIMATION
+// =============================================================================
+
+const CONSTRUCTION_COSTS = {
+  standard_hamptons: { standard: 800, high_end: 1200, ultra_luxury: 1800 },
+  springs: { standard: 400, high_end: 600, ultra_luxury: 900 },
+};
+
+function getConstructionCost(village: string): { standard: number; high_end: number; ultra_luxury: number } {
+  return normalize(village) === "springs" ? CONSTRUCTION_COSTS.springs : CONSTRUCTION_COSTS.standard_hamptons;
+}
+
+// =============================================================================
+// FLIP DETECTION (same address sold twice within 3-36 months)
+// =============================================================================
+
+interface FlipDetection {
+  is_flip: boolean;
+  previous_sale?: { price: number; date: string };
+  current_sale?: { price: number; date: string };
+  months_between?: number;
+  price_change_pct?: number;
+}
+
+function detectFlips(comps: CompSale[]): Map<string, FlipDetection> {
+  const flips = new Map<string, FlipDetection>();
+  
+  // Group by normalized address
+  const byAddress = new Map<string, CompSale[]>();
+  for (const comp of comps) {
+    // Normalize address for matching (strip unit numbers, lowercase, trim)
+    const addr = normalize(comp.address || "")
+      .replace(/\s*(#|unit|apt|ste)\s*\S*/gi, "")
+      .replace(/[^a-z0-9\s]/g, "")
+      .trim();
+    if (!addr) continue;
+    const existing = byAddress.get(addr) || [];
+    existing.push(comp);
+    byAddress.set(addr, existing);
+  }
+
+  for (const [addr, sales] of byAddress) {
+    if (sales.length < 2) continue;
+    
+    // Sort by date
+    const sorted = sales
+      .filter(s => s.sold_date)
+      .sort((a, b) => new Date(a.sold_date!).getTime() - new Date(b.sold_date!).getTime());
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const prev = sorted[i];
+      const curr = sorted[i + 1];
+      const monthsBetween = Math.round(
+        (new Date(curr.sold_date!).getTime() - new Date(prev.sold_date!).getTime()) / (1000 * 60 * 60 * 24 * 30)
+      );
+
+      if (monthsBetween >= 3 && monthsBetween <= 36) {
+        const priceDelta = ((curr.sold_price - prev.sold_price) / prev.sold_price) * 100;
+        flips.set(curr.id, {
+          is_flip: true,
+          previous_sale: { price: prev.sold_price, date: prev.sold_date! },
+          current_sale: { price: curr.sold_price, date: curr.sold_date! },
+          months_between: monthsBetween,
+          price_change_pct: Math.round(priceDelta),
+        });
+      }
+    }
+  }
+
+  return flips;
+}
+
+// =============================================================================
+// NOH DIMINISHING RETURNS ON ACREAGE
+// =============================================================================
+
+/**
+ * Calculate NOH land value with diminishing returns.
+ * 1st acre: 100% of base, 2nd acre: 70%, additional: 50%
+ * Returns estimated land value.
+ */
+function calculateNohLandValue(
+  lotAcres: number,
+  village: string,
+  locationType: string
+): number {
+  const vill = normalize(village);
+  
+  // Base per-acre values for NOH
+  let basePerAcre: number;
+  const isVillageHamlet = ["sag harbor", "east hampton village", "southampton village", "bridgehampton"].includes(vill);
+  
+  if (locationType === "springs") basePerAcre = 1_100_000;
+  else if (locationType === "northwest_woods") basePerAcre = 2_600_000;
+  else if (isVillageHamlet) basePerAcre = 3_400_000;
+  else basePerAcre = 3_000_000;
+
+  // Diminishing returns
+  if (lotAcres <= 1) {
+    return Math.max(lotAcres * basePerAcre, locationType === "springs" ? 700_000 : 800_000);
+  }
+
+  let value = basePerAcre; // First acre at 100%
+  if (lotAcres > 1) {
+    const secondAcre = Math.min(lotAcres - 1, 1);
+    value += secondAcre * basePerAcre * 0.70; // Second acre at 70%
+  }
+  if (lotAcres > 2) {
+    value += (lotAcres - 2) * basePerAcre * 0.50; // Additional at 50%
+  }
+
+  // Minimums
+  if (locationType === "springs") {
+    if (lotAcres <= 0.4) return Math.max(value, 900_000);
+    if (lotAcres <= 1.0) return Math.max(value, 1_200_000);
+  } else {
+    if (lotAcres <= 0.25 && isVillageHamlet) return Math.max(value, 1_200_000);
+  }
+
+  return Math.round(value);
+}
+
+// =============================================================================
 // MICRO-MARKET DATA
 // =============================================================================
 
@@ -126,6 +269,9 @@ interface ScoredComp extends CompSale {
   score_breakdown: Record<string, number>;
   price_difference_pct: number;
   days_ago: number;
+  condition: PropertyCondition;
+  noh_land_value: number | null;
+  flip_info: FlipDetection | null;
 }
 
 // =============================================================================
@@ -270,8 +416,27 @@ function scoreComp(
     scores.street_premium_match = 0;
   }
 
+  // --- NOH acreage diminishing returns adjustment ---
+  // If comp is NOH with large lot, the per-acre value drops
+  // Boost comps with similar lot sizes in NOH
+  if (!compClass.isSouthOfHighway && comp.lot_acres && subject.lot_acres) {
+    // Both NOH: if lot sizes are very different, penalize slightly
+    const lotRatio = comp.lot_acres / subject.lot_acres;
+    if (lotRatio > 3.0 || lotRatio < 0.33) {
+      scores.lot_match = Math.max(0, scores.lot_match - 3);
+    }
+  }
+
   const totalScore = Object.values(scores).reduce((a, b) => a + b, 0);
-  const refPrice = subject.price || adjustedPrice;
+
+  // Condition detection
+  const ppsf = comp.sqft && comp.sqft > 0 ? comp.sold_price / comp.sqft : null;
+  const condition = detectCondition(ppsf ? Math.round(ppsf) : null, comp.village || "");
+
+  // NOH land value estimate
+  const nohLandValue = !compClass.isSouthOfHighway && comp.lot_acres
+    ? calculateNohLandValue(comp.lot_acres, comp.village || "", compClass.locationType)
+    : null;
 
   return {
     ...comp,
@@ -284,6 +449,9 @@ function scoreComp(
       ? Math.round(((adjustedPrice - subject.price) / subject.price) * 100)
       : 0,
     days_ago: daysAgo,
+    condition,
+    noh_land_value: nohLandValue,
+    flip_info: null, // Populated later in batch
   };
 }
 
@@ -369,7 +537,7 @@ function estimateValue(
     : 1.0;
 
   // Final estimate: blend of weighted median and weighted average
-  const rawEstimate = Math.round((weightedMedian * 0.6 + weightedAvg * 0.4) * premiumAdjustment);
+  let rawEstimate = Math.round((weightedMedian * 0.6 + weightedAvg * 0.4) * premiumAdjustment);
 
   // Round to nearest $25K
   const estimated = Math.round(rawEstimate / 25000) * 25000;
@@ -386,16 +554,41 @@ function estimateValue(
   const p10 = prices[Math.floor(prices.length * 0.1)] || prices[0];
   const p90 = prices[Math.ceil(prices.length * 0.9) - 1] || prices[prices.length - 1];
 
+  // NOH diminishing returns adjustment
+  if (!subject.classification.isSouthOfHighway && subject.lot_acres && subject.lot_acres > 2) {
+    const nohLandVal = calculateNohLandValue(subject.lot_acres, subject.village, subject.classification.locationType);
+    // If comps have smaller lots, the per-acre value is higher than what this large lot would get
+    const compsAvgLot = comps.filter(c => c.lot_acres).reduce((s, c) => s + (c.lot_acres || 0), 0) /
+      comps.filter(c => c.lot_acres).length || 1;
+    if (subject.lot_acres > compsAvgLot * 1.5) {
+      // Subject has much larger lot than comps — diminishing returns apply
+      // Reduce estimate slightly (large NOH lots don't scale linearly)
+      const dimFactor = 0.95; // 5% reduction for significantly larger lots
+      rawEstimate = Math.round(rawEstimate * dimFactor);
+    }
+  }
+
   // Build factors explanation
   const factors: string[] = [];
   factors.push(`Based on ${comps.length} comparable sales`);
   if (subject.classification.isSouthOfHighway) factors.push("South of Highway location");
+  else factors.push("North of Highway location");
   if (subject.classification.hasWaterfront) factors.push(`${subject.classification.waterfrontType} waterfront`);
   if (streetPremium > 1.0) factors.push(`Premium road (${streetPremium}x multiplier)`);
   if (subject.beds) factors.push(`${subject.beds} bedrooms`);
-  if (subject.lot_acres) factors.push(`${subject.lot_acres} acres`);
+  if (subject.lot_acres) {
+    factors.push(`${subject.lot_acres} acres`);
+    if (!subject.classification.isSouthOfHighway && subject.lot_acres > 2) {
+      factors.push("NOH diminishing returns applied for large lot");
+    }
+  }
   const recentComps = comps.filter(c => c.days_ago <= 365).length;
   factors.push(`${recentComps} sales within last 12 months`);
+  
+  // Condition distribution
+  const conditions = comps.reduce((acc, c) => { acc[c.condition] = (acc[c.condition] || 0) + 1; return acc; }, {} as Record<string, number>);
+  const conditionStr = Object.entries(conditions).filter(([k]) => k !== "unknown").map(([k, v]) => `${v} ${k}`).join(", ");
+  if (conditionStr) factors.push(`Conditions: ${conditionStr}`);
 
   return {
     estimated_value: estimated,
@@ -629,6 +822,12 @@ smartCompsRouter.post("/analyze", async (c) => {
       .sort((a, b) => b.relevance_score - a.relevance_score)
       .slice(0, targetCount);
 
+    // Detect flips across ALL fetched comps (need full set for address matching)
+    const flipMap = detectFlips(allComps);
+    for (const comp of scored) {
+      comp.flip_info = flipMap.get(comp.id) || null;
+    }
+
     // Calculate valuation if in valuation mode
     const valuation = isValuationMode
       ? estimateValue(scored, { ...subject, classification: subjectClass })
@@ -669,6 +868,12 @@ smartCompsRouter.post("/analyze", async (c) => {
       },
       valuation,
       strategy_used: strategyUsed,
+      // Subject NOH land value if applicable
+      subject_noh_land_value: !subjectClass.isSouthOfHighway && subject.lot_acres
+        ? calculateNohLandValue(subject.lot_acres, subject.village, subjectClass.locationType)
+        : null,
+      construction_costs: getConstructionCost(subject.village),
+      flips_detected: scored.filter(c => c.flip_info?.is_flip).length,
       comps: scored.map(comp => ({
         address: comp.address,
         village: comp.village,
@@ -689,6 +894,9 @@ smartCompsRouter.post("/analyze", async (c) => {
         market_tier: getMarketTier(comp.village || ""),
         micro_market: comp.micro_market,
         source: comp.source,
+        condition: comp.condition,
+        noh_land_value: comp.noh_land_value,
+        flip_info: comp.flip_info,
       })),
       stats,
     });
