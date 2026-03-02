@@ -1233,3 +1233,4 @@ smartCompsRouter.get("/market-data", (c) => {
 });
 
 export { smartCompsRouter };// v4 - Mon Mar  2 13:10:21 EST 2026
+// deploy 1772488058
