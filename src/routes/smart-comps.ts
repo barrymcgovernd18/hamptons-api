@@ -976,9 +976,12 @@ smartCompsRouter.post("/analyze", async (c) => {
         const compat = areComparable(subjectClass, comp.classification);
         return compat.comparable;
       })
-      // Condition filter: only keep comps matching the user's selected condition
+      // Condition filter: for land_needs_work, use scoring bonuses instead of hard-filter
+      // (teardown searches need new construction + vacant land comps, not just other teardowns)
+      // For other conditions, hard-filter to matching comps
       .filter(comp => {
         if (!conditionFilter) return true;
+        if (conditionFilter === "land_needs_work") return true; // Handled by special scoring bonuses
         return comp.condition === conditionFilter;
       })
       // Location tier filter: only keep comps matching the selected location type
