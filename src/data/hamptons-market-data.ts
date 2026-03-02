@@ -816,12 +816,14 @@ export function areComparable(
   subject: LocationClassification,
   comp: LocationClassification
 ): { comparable: boolean; penalty: number; reason?: string } {
-  // Rule: Tier 1 (oceanfront) ONLY comps against Tier 1
+  // Rule: Tier 1 (oceanfront) vs non-oceanfront is penalized but NOT hard-rejected
+  // The location_tier filter handles hard filtering downstream when user selects "oceanfront"
+  // This allows more comps to flow through with score penalties
   if (subject.locationType === "tier1_oceanfront" && comp.locationType !== "tier1_oceanfront") {
-    return { comparable: false, penalty: -30, reason: "Oceanfront should only comp against oceanfront" };
+    return { comparable: true, penalty: -20, reason: "Oceanfront vs non-oceanfront penalty" };
   }
   if (comp.locationType === "tier1_oceanfront" && subject.locationType !== "tier1_oceanfront") {
-    return { comparable: false, penalty: -30, reason: "Non-oceanfront should not comp against oceanfront" };
+    return { comparable: true, penalty: -20, reason: "Non-oceanfront vs oceanfront penalty" };
   }
 
   // Rule: Tier 2 (prime SOH) should not comp against NOH
