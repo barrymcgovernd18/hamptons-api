@@ -186,8 +186,11 @@ async function fetchCompsFromSupabase(
   }
 
   // Use Supabase REST API with filters
-  const villageFilter = villages.map(v => `village.ilike.${v}`).join(",");
-  const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=*&or=(${villageFilter})&sold_price=gte.${minPrice}&sold_price=lte.${maxPrice}&order=sold_price.desc&limit=100`;
+  // ilike for case-insensitive matching
+  const villageFilter = villages.map(v => `village.ilike.${encodeURIComponent(v)}`).join(",");
+  const url = `${SUPABASE_URL}/rest/v1/comparable_sales?select=*&or=(${villageFilter})&sold_price=gte.${minPrice}&sold_price=lte.${maxPrice}&order=sold_price.desc&limit=200`;
+  
+  console.log(`[SmartComps] Supabase URL: ${url.replace(SUPABASE_URL, '...')}`);
 
   const res = await fetch(url, {
     headers: {
@@ -365,9 +368,9 @@ smartCompsRouter.post("/analyze", async (c) => {
       })),
       stats,
     });
-  } catch (error) {
-    console.error("[SmartComps] Error:", error);
-    return c.json({ success: false, error: "Failed to analyze comps" }, 500);
+  } catch (error: any) {
+    console.error("[SmartComps] Error:", error?.message || error);
+    return c.json({ success: false, error: "Failed to analyze comps", details: error?.message }, 500);
   }
 });
 
