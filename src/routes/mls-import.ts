@@ -202,7 +202,7 @@ Important:
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "grok-2-latest",
+      model: "grok-3",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: `URL: ${url}\n\nHTML:\n${trimmedHtml}` },
