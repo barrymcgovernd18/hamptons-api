@@ -3428,3 +3428,37 @@ adminRouter.post("/geocode-listings", async (c) => {
     return c.json({ success: false, error: "Failed to geocode listings" }, 500);
   }
 });
+// Admin: Grant credits to a user
+adminRouter.post("/grant-credits", async (c) => {
+  const body = await c.req.json();
+  const { email, article_credits, listing_credits } = body;
+  
+  if (!email) {
+    return c.json({ success: false, error: "Email required" }, 400);
+  }
+
+  try {
+    const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+    if (!user) {
+      return c.json({ success: false, error: "User not found" }, 404);
+    }
+
+    const updates: any = {};
+    if (article_credits) updates.purchased_article_credits = user.purchased_article_credits + article_credits;
+    if (listing_credits) updates.purchased_listing_credits = user.purchased_listing_credits + listing_credits;
+
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: updates,
+    });
+
+    return c.json({
+      success: true,
+      user: email,
+      purchased_article_credits: updated.purchased_article_credits,
+      purchased_listing_credits: updated.purchased_listing_credits,
+    });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500);
+  }
+});
