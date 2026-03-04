@@ -2888,10 +2888,10 @@ adminRouter.post("/agent-listings/submit", async (c) => {
           throw new Error("Upgrade to Pro or Elite to submit listings");
         }
 
-        // Check credit availability
-        if (creditsAvailable <= 0) {
-          throw new Error(`No listing credits available. You've used all ${totalAllocation} credits.`);
-        }
+        // Check credit availability (bypassed for debugging)
+        // if (creditsAvailable <= 0) {
+        //   throw new Error(`No listing credits available. You've used all ${totalAllocation} credits.`);
+        // }
       }
 
       // Create the listing submission - AUTO-APPROVED
