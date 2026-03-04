@@ -137,7 +137,7 @@ app.use("/api/admin/*", async (c, next) => {
   }
   
   // Allow user status check for debugging
-  if (c.req.path.startsWith("/api/admin/user-status/") && c.req.method === "GET") {
+  if (c.req.path.match(/^\/api\/admin\/user-status\//) && c.req.method === "GET") {
     await next();
     return;
   }
