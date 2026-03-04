@@ -3462,3 +3462,95 @@ adminRouter.post("/grant-credits", async (c) => {
     return c.json({ success: false, error: err.message }, 500);
   }
 });
+
+// POST /api/admin/sync-approved-listings - Copy approved agent submissions to main listings table
+adminRouter.post("/sync-approved-listings", async (c) => {
+  try {
+    console.log("[Admin] Starting sync of approved agent listings...");
+    
+    // Find all approved agent submissions that haven't been synced yet
+    const approvedSubmissions = await prisma.agentListingSubmission.findMany({
+      where: {
+        status: 'approved',
+        synced_to_listing: { not: true }, // Only unsynced ones
+      },
+      orderBy: { submitted_at: 'desc' }
+    });
+
+    if (approvedSubmissions.length === 0) {
+      return c.json({
+        success: true,
+        count: 0,
+        message: "No new approved listings to sync"
+      });
+    }
+
+    const syncedListings = [];
+
+    for (const submission of approvedSubmissions) {
+      try {
+        // Create listing in main table
+        const listing = await prisma.listing.create({
+          data: {
+            address: submission.address,
+            village: submission.village,
+            price: submission.price,
+            listing_type: submission.listing_type || 'sale',
+            property_type: submission.property_type || 'house',
+            beds: submission.beds,
+            baths: submission.baths,
+            sqft: submission.sqft,
+            acres: submission.acres,
+            year_built: submission.year_built,
+            description: submission.description,
+            image_url: submission.image_url,
+            image_urls: submission.image_urls,
+            video_tour_url: submission.video_tour_url,
+            latitude: submission.latitude,
+            longitude: submission.longitude,
+            market_id: submission.market_id || 'hamptons',
+            status: 'active',
+            featured: true, // Agent submissions are featured by default
+            agent_name: submission.agent_name,
+            agent_email: submission.agent_email,
+            agent_company: submission.agent_company,
+            agent_phone: submission.agent_phone,
+            created_at: new Date(),
+            updated_at: new Date(),
+          }
+        });
+
+        // Mark submission as synced
+        await prisma.agentListingSubmission.update({
+          where: { id: submission.id },
+          data: { synced_to_listing: true, listing_id: listing.id }
+        });
+
+        syncedListings.push({
+          id: listing.id,
+          address: submission.address,
+          village: submission.village,
+          price: submission.price,
+          agent_email: submission.agent_email
+        });
+
+        console.log(`[Admin] Synced: ${submission.address}, ${submission.village} → listing ID ${listing.id}`);
+      } catch (error) {
+        console.error(`[Admin] Failed to sync submission ${submission.id}:`, error);
+      }
+    }
+
+    console.log(`[Admin] Successfully synced ${syncedListings.length} of ${approvedSubmissions.length} approved listings`);
+
+    return c.json({
+      success: true,
+      count: syncedListings.length,
+      listings: syncedListings,
+      message: `Successfully synced ${syncedListings.length} approved listings to main feed`
+    });
+
+  } catch (error) {
+    console.error("[Admin] Sync approved listings error:", error);
+    return c.json({ success: false, error: "Failed to sync approved listings" }, 500);
+  }
+});
