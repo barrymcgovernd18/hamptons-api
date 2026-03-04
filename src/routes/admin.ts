@@ -3479,6 +3479,16 @@ adminRouter.post("/sync-approved-listings", async (c) => {
     });
 
     console.log(`[Admin] Found ${approvedSubmissions.length} approved submissions to potentially sync`);
+    
+    if (approvedSubmissions.length > 0) {
+      console.log(`[Admin] First submission:`, {
+        id: approvedSubmissions[0].id,
+        address: approvedSubmissions[0].address,
+        village: approvedSubmissions[0].village,
+        agent_email: approvedSubmissions[0].agent_email,
+        status: approvedSubmissions[0].status
+      });
+    }
 
     if (approvedSubmissions.length === 0) {
       return c.json({
