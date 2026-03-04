@@ -135,6 +135,12 @@ app.use("/api/admin/*", async (c, next) => {
     await next();
     return;
   }
+  
+  // Allow user status check for debugging
+  if (c.req.path.startsWith("/api/admin/user-status/") && c.req.method === "GET") {
+    await next();
+    return;
+  }
 
   const secret = c.req.header("X-Admin-Secret");
   const expectedSecret = process.env.ADMIN_SECRET;

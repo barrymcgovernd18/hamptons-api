@@ -3562,3 +3562,55 @@ adminRouter.post("/sync-approved-listings", async (c) => {
     return c.json({ success: false, error: "Failed to sync approved listings" }, 500);
   }
 });
+
+// GET /api/admin/user-status/:email - Check user status for debugging
+adminRouter.get("/user-status/:email", async (c) => {
+  try {
+    const email = decodeURIComponent(c.req.param("email"));
+    
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+      select: {
+        id: true,
+        email: true,
+        tier: true,
+        role: true,
+        listing_credits_used: true,
+        purchased_listing_credits: true,
+        agent_verification_status: true,
+        is_vip: true
+      }
+    });
+
+    if (!user) {
+      return c.json({ success: false, error: "User not found" }, 404);
+    }
+
+    // Calculate available credits
+    const tierAllocation = user.tier === 'elite' ? 10 : (user.tier === 'agent' ? 6 : 0);
+    const totalAllocation = tierAllocation + user.purchased_listing_credits;
+    const creditsAvailable = Math.max(0, totalAllocation - user.listing_credits_used);
+
+    return c.json({
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        tier: user.tier,
+        role: user.role,
+        agent_verification_status: user.agent_verification_status,
+        is_vip: user.is_vip,
+        listing_credits_used: user.listing_credits_used,
+        purchased_listing_credits: user.purchased_listing_credits,
+        tier_allocation: tierAllocation,
+        total_allocation: totalAllocation,
+        credits_available: creditsAvailable,
+        can_submit_listings: user.role === 'admin' || user.tier === 'agent' || user.tier === 'elite'
+      }
+    });
+
+  } catch (error) {
+    console.error("[Admin] User status error:", error);
+    return c.json({ success: false, error: "Failed to check user status" }, 500);
+  }
+});
