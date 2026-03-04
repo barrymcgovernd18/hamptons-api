@@ -2879,14 +2879,13 @@ adminRouter.post("/agent-listings/submit", async (c) => {
       const totalAllocation = tierAllocation + user.purchased_listing_credits;
       const creditsAvailable = Math.max(0, totalAllocation - user.listing_credits_used);
 
-      // Admin bypass
-      if (user.role !== 'admin') {
-        // Temporary bypass for barry@ledgerandstone.com during debugging
-        if (agent_email.toLowerCase() !== 'barry@ledgerandstone.com') {
-          // Check tier allows listings
-          if (user.tier !== 'agent' && user.tier !== 'elite') {
-            throw new Error("Upgrade to Pro or Elite to submit listings");
-          }
+      // Admin bypass or Barry bypass
+      const isBypass = user.role === 'admin' || agent_email.toLowerCase() === 'barry@ledgerandstone.com';
+      
+      if (!isBypass) {
+        // Check tier allows listings
+        if (user.tier !== 'agent' && user.tier !== 'elite') {
+          throw new Error("Upgrade to Pro or Elite to submit listings");
         }
 
         // Check credit availability
@@ -2928,8 +2927,8 @@ adminRouter.post("/agent-listings/submit", async (c) => {
         },
       });
 
-      // Deduct credit atomically (skip for admin)
-      if (user.role !== 'admin') {
+      // Deduct credit atomically (skip for admin and Barry)
+      if (!isBypass) {
         const tierCreditsRemaining = Math.max(0, tierAllocation - user.listing_credits_used);
 
         if (tierCreditsRemaining > 0) {
@@ -2949,7 +2948,7 @@ adminRouter.post("/agent-listings/submit", async (c) => {
 
       return {
         submission,
-        creditsRemaining: user.role === 'admin' ? 999 : creditsAvailable - 1,
+        creditsRemaining: isBypass ? 999 : creditsAvailable - 1,
       };
     });
 
