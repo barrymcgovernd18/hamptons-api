@@ -2881,9 +2881,12 @@ adminRouter.post("/agent-listings/submit", async (c) => {
 
       // Admin bypass
       if (user.role !== 'admin') {
-        // Check tier allows listings
-        if (user.tier !== 'agent' && user.tier !== 'elite') {
-          throw new Error("Upgrade to Pro or Elite to submit listings");
+        // Temporary bypass for barry@ledgerandstone.com during debugging
+        if (agent_email.toLowerCase() !== 'barry@ledgerandstone.com') {
+          // Check tier allows listings
+          if (user.tier !== 'agent' && user.tier !== 'elite') {
+            throw new Error("Upgrade to Pro or Elite to submit listings");
+          }
         }
 
         // Check credit availability
