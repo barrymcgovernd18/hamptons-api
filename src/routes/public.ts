@@ -1047,4 +1047,28 @@ publicRouter.get("/agent-profile-by-name/:name", async (c) => {
   }
 });
 
+// GET /api/public/sync-status - Check if approved agent listings need syncing
+publicRouter.get("/sync-status", async (c) => {
+  try {
+    const unsyncedCount = await prisma.agentListingSubmission.count({
+      where: {
+        status: 'approved',
+        synced_to_listing: { not: true },
+      }
+    });
+
+    const totalListings = await prisma.listing.count();
+    
+    return c.json({
+      success: true,
+      unsynced_count: unsyncedCount,
+      total_listings: totalListings,
+      needs_sync: unsyncedCount > 0
+    });
+  } catch (error) {
+    console.error("[Public API] Error checking sync status:", error);
+    return c.json({ success: false, error: "Failed to check sync status" }, 500);
+  }
+});
+
 export { publicRouter };
