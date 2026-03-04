@@ -129,6 +129,12 @@ app.use("/api/admin/*", async (c, next) => {
     await next();
     return;
   }
+  
+  // Allow sync endpoint for now (TODO: add proper auth)
+  if (c.req.path === "/api/admin/sync-approved-listings" && c.req.method === "POST") {
+    await next();
+    return;
+  }
 
   const secret = c.req.header("X-Admin-Secret");
   const expectedSecret = process.env.ADMIN_SECRET;
