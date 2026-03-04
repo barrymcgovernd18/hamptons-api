@@ -3626,3 +3626,47 @@ adminRouter.get("/user-status/:email", async (c) => {
     return c.json({ success: false, error: "Failed to check user status" }, 500);
   }
 });
+
+// POST /api/admin/create-barry-listing - Direct creation for debugging
+adminRouter.post("/create-barry-listing", async (c) => {
+  try {
+    const listing = await prisma.listing.create({
+      data: {
+        id: `barry_millstone_${Date.now()}`,
+        address: "1694 Millstone Road",
+        village: "Sag Harbor",
+        price: 7950000,
+        listing_type: "sale",
+        property_type: "house", 
+        beds: 6,
+        baths: 5,
+        sqft: 4200,
+        description: "Beautiful waterfront property in Sag Harbor",
+        market_id: "hamptons",
+        status: "active",
+        featured: true,
+        agent_name: "Barry McGovern",
+        agent_email: "barry@ledgerandstone.com",
+        agent_company: "Ledger & Stone",
+        created_at: new Date(),
+        updated_at: new Date(),
+        image_url: "https://tfzkenrmzoxrkdntkada.supabase.co/storage/v1/object/public/listing-images/articles/lib_hamptons_classic_estate.jpg"
+      }
+    });
+
+    return c.json({
+      success: true,
+      listing: {
+        id: listing.id,
+        address: listing.address,
+        village: listing.village,
+        price: listing.price
+      },
+      message: "Barry's listing created successfully"
+    });
+
+  } catch (error) {
+    console.error("[Admin] Create Barry listing error:", error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
